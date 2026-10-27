@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
 
     steps:
       - name: Checkout source
@@ -21,64 +22,51 @@ jobs:
           path: source
 
       - name: Install dependencies
+        shell: bash
         run: |
-          sudo apt-get update
+          set -euo pipefail
+
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
+
           sudo apt-get install -y \
+            --no-install-recommends \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
             build-essential \
-            gcc-mingw-w64-i686 \
-            gcc-mingw-w64-x86-64 \
+            gcc-mingw-w64-i686-posix \
+            gcc-mingw-w64-x86-64-posix \
             mono-mcs \
-            pkg-config
+            pkg-config \
+            libsdl3-dev
 
-      - name: Build and install SDL3
-        run: |
-          sudo apt-get install -y \
-            cmake \
-            ninja-build \
-            libx11-dev \
-            libxext-dev \
-            libxrandr-dev \
-            libxcursor-dev \
-            libxfixes-dev \
-            libxi-dev \
-            libxss-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libdecor-0-dev \
-            libdbus-1-dev \
-            libudev-dev \
-            libasound2-dev \
-            libpulse-dev \
-            libgl1-mesa-dev \
-            libegl1-mesa-dev \
-            libibus-1.0-dev
-
-          git clone --depth 1 \
-            https://github.com/libsdl-org/SDL.git \
-            /tmp/SDL
-
-          cmake -S /tmp/SDL -B /tmp/SDL/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DSDL_SHARED=ON \
-            -DSDL_STATIC=OFF \
-            -DSDL_TESTS=OFF \
-            -DSDL_EXAMPLES=OFF
-
-          cmake --build /tmp/SDL/build --parallel 2
-          sudo cmake --install /tmp/SDL/build
-          sudo ldconfig
+          echo "=== Vérification des dépendances ==="
+          command -v gcc
+          command -v i686-w64-mingw32-gcc
+          command -v x86_64-w64-mingw32-gcc
+          pkg-config --modversion sdl3 || true
+          ldconfig -p | grep -i SDL3 || true
 
       - name: Install Rust
+        shell: bash
         run: |
+          set -euo pipefail
+
           rustup toolchain install stable --profile minimal
           rustup default stable
+
           rustup target add \
             i686-pc-windows-gnu \
             x86_64-pc-windows-gnu
 
       - name: Compile
         working-directory: source
+        shell: bash
         run: |
+          set -euo pipefail
           chmod +x build.sh
           ./build.sh
 
@@ -94,6 +82,11 @@ jobs:
 
           mkdir -p ../package/payloads ../package/changed-files
 
+          if [ ! -d dist/arcade-launcher ]; then
+            echo "ERREUR : dist/arcade-launcher est introuvable."
+            exit 1
+          fi
+
           cp -a dist/arcade-launcher ../package/
 
           if [ -d dist/payloads ]; then
@@ -104,7 +97,10 @@ jobs:
             "${BASE}...HEAD" -- '*.yaml' '*.yml' |
           while IFS= read -r file; do
             [ -f "$file" ] || continue
-            mkdir -p "../package/changed-files/$(dirname "$file")"
+
+            mkdir -p \
+              "../package/changed-files/$(dirname "$file")"
+
             cp "$file" "../package/changed-files/$file"
           done
 
