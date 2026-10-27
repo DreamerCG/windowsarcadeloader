@@ -108,23 +108,25 @@ jobs:
         run: |
           set -euo pipefail
 
+          BASE="5dba7ffc1f2dfbf9d701a08483f2ceb8879414f3"
+
           echo "=== Répertoire courant ==="
           pwd
-          
+
           echo "=== Contenu de source ==="
           ls -la
-          
-          echo "=== Recherche des fichiers générés ==="
-          find . -maxdepth 4 \( -name arcade-launcher -o -name wal-loader.exe \) -print
 
-          BASE="5dba7ffc1f2dfbf9d701a08483f2ceb8879414f3"
+          echo "=== Recherche des fichiers générés ==="
+          find dist target -maxdepth 5 -type f \
+            \( -name 'arcade-launcher' -o -name '*.exe' -o -name '*.dll' \) \
+            -print | head -100
 
           git cat-file -e "${BASE}^{commit}"
 
           mkdir -p ../package/payloads ../package/changed-files
 
-          if [ ! -d dist/arcade-launcher ]; then
-            echo "ERREUR : dist/arcade-launcher est introuvable."
+          if [ ! -f dist/arcade-launcher ]; then
+            echo "ERREUR : le fichier dist/arcade-launcher est introuvable."
             exit 1
           fi
 
