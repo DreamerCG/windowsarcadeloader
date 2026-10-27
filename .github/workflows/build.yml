@@ -1,0 +1,70 @@
+
+name: Build Windows Arcade Loader
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: aderumier/windowsarcadeloader
+          ref: master
+          fetch-depth: 0
+          path: source
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc-mingw-w64-i686 gcc-mingw-w64-x86-64 mono-mcs pkg-config
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add i686-pc-windows-gnu x86_64-pc-windows-gnu
+
+      - name: Compile
+        working-directory: source
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Package results
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="5dba7ffc1f2dfbf9d701a08483f2ceb8879414f3"
+          git cat-file -e "${BASE}^{commit}"
+          mkdir -p ../package/payloads ../package/changed-files
+          cp -a dist/arcade-launcher ../package/
+          if [ -d dist/payloads ]; then
+            cp -a dist/payloads/. ../package/payloads/
+          fi
+          git diff --name-only --diff-filter=ACMRT "${BASE}...HEAD" -- '*.yaml' '*.yml' |
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            mkdir -p "../package/changed-files/$(dirname "$file")"
+            cp "$file" "../package/changed-files/$file"
+          done
+          {
+            echo "Base commit: $BASE"
+            echo "Build commit: $(git rev-parse HEAD)"
+          } > ../package/BUILD-INFO.txt
+          tar -czf ../windowsarcadeloader-since-5dba7ff.tar.gz -C ../package .
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: windowsarcadeloader-since-5dba7ff
+          path: windowsarcadeloader-since-5dba7ff.tar.gz
+          if-no-files-found: error
+          retention-days: 14
