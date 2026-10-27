@@ -1,4 +1,4 @@
-name: Build Windows Arcade Loader
+name: Build Windows Arcade Loader - Full Package
 
 on:
   workflow_dispatch:
@@ -94,7 +94,7 @@ jobs:
             i686-pc-windows-gnu \
             x86_64-pc-windows-gnu
 
-      - name: Compile
+      - name: Compile launcher and payloads
         working-directory: source
         shell: bash
         run: |
@@ -102,63 +102,95 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
-      - name: Package results
+      - name: Package complete distribution
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
 
-          BASE="5dba7ffc1f2dfbf9d701a08483f2ceb8879414f3"
+          PACKAGE="../package"
+          ARCHIVE="../windowsarcadeloader-full.tar.gz"
 
-          echo "=== Répertoire courant ==="
-          pwd
+          rm -rf "$PACKAGE"
+          mkdir -p "$PACKAGE"
 
-          echo "=== Contenu de source ==="
-          ls -la
-
-          echo "=== Recherche des fichiers générés ==="
-          find dist target -maxdepth 5 -type f \
-            \( -name 'arcade-launcher' -o -name '*.exe' -o -name '*.dll' \) \
-            -print | head -100
-
-          git cat-file -e "${BASE}^{commit}"
-
-          mkdir -p ../package/payloads ../package/changed-files
+          echo "=== Vérification des fichiers indispensables ==="
 
           if [ ! -f dist/arcade-launcher ]; then
-            echo "ERREUR : le fichier dist/arcade-launcher est introuvable."
+            echo "ERREUR : dist/arcade-launcher introuvable."
             exit 1
           fi
 
-          cp -a dist/arcade-launcher ../package/
-
-          if [ -d dist/payloads ]; then
-            cp -a dist/payloads/. ../package/payloads/
+          if [ ! -d dist/payloads ]; then
+            echo "ERREUR : dist/payloads introuvable."
+            exit 1
           fi
 
-          git diff --name-only --diff-filter=ACMRT \
-            "${BASE}...HEAD" -- '*.yaml' '*.yml' |
-          while IFS= read -r file; do
-            [ -f "$file" ] || continue
+          if [ -z "$(find dist/payloads -type f -print -quit)" ]; then
+            echo "ERREUR : aucun payload compilé."
+            exit 1
+          fi
 
-            mkdir -p \
-              "../package/changed-files/$(dirname "$file")"
+          if [ ! -d systemprofiles ]; then
+            echo "ERREUR : le dossier systemprofiles est introuvable."
+            exit 1
+          fi
 
-            cp "$file" "../package/changed-files/$file"
-          done
+          echo "=== Copie du launcher ==="
+          cp -a dist/arcade-launcher "$PACKAGE/"
 
-          {
-            echo "Base commit: $BASE"
-            echo "Build commit: $(git rev-parse HEAD)"
-          } > ../package/BUILD-INFO.txt
+          echo "=== Copie de tous les payloads ==="
+          mkdir -p "$PACKAGE/payloads"
+          cp -a dist/payloads/. "$PACKAGE/payloads/"
 
-          tar -czf ../windowsarcadeloader-since-5dba7ff.tar.gz \
-            -C ../package .
+          echo "=== Copie de tous les profils système ==="
+          cp -a systemprofiles "$PACKAGE/systemprofiles"
 
-      - name: Upload archive
+          echo "=== Vérification du contenu ==="
+
+          echo "Launcher :"
+          ls -lh "$PACKAGE/arcade-launcher"
+
+          echo "Nombre de payloads :"
+          find "$PACKAGE/payloads" -type f | wc -l
+
+          echo "Nombre de fichiers de profils système :"
+          find "$PACKAGE/systemprofiles" -type f | wc -l
+
+          echo "Taille des profils système :"
+          du -sh "$PACKAGE/systemprofiles"
+
+          echo "=== Création de l'archive ==="
+          tar -czf "$ARCHIVE" -C "$PACKAGE" .
+
+          echo "=== Vérification de l'archive ==="
+          tar -tzf "$ARCHIVE" > ../archive-content.txt
+
+          if ! grep -q '^\./arcade-launcher$' ../archive-content.txt; then
+            echo "ERREUR : arcade-launcher absent de l'archive."
+            exit 1
+          fi
+
+          if ! grep -q '^\./payloads/' ../archive-content.txt; then
+            echo "ERREUR : payloads absent de l'archive."
+            exit 1
+          fi
+
+          if ! grep -q '^\./systemprofiles/' ../archive-content.txt; then
+            echo "ERREUR : systemprofiles absent de l'archive."
+            exit 1
+          fi
+
+          echo "=== Archive générée ==="
+          ls -lh "$ARCHIVE"
+
+          echo "=== Premiers fichiers de l'archive ==="
+          head -200 ../archive-content.txt
+
+      - name: Upload full distribution
         uses: actions/upload-artifact@v4
         with:
-          name: windowsarcadeloader-since-5dba7ff
-          path: windowsarcadeloader-since-5dba7ff.tar.gz
+          name: windowsarcadeloader-full
+          path: windowsarcadeloader-full.tar.gz
           if-no-files-found: error
           retention-days: 14
