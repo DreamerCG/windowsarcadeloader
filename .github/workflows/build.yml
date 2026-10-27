@@ -108,6 +108,15 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=== Répertoire courant ==="
+          pwd
+          
+          echo "=== Contenu de source ==="
+          ls -la
+          
+          echo "=== Recherche des fichiers générés ==="
+          find . -maxdepth 4 \( -name arcade-launcher -o -name wal-loader.exe \) -print
+
           BASE="5dba7ffc1f2dfbf9d701a08483f2ceb8879414f3"
 
           git cat-file -e "${BASE}^{commit}"
