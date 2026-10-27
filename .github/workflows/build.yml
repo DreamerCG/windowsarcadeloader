@@ -1,4 +1,4 @@
-
+```yaml
 name: Build Windows Arcade Loader
 
 on:
@@ -49,6 +49,7 @@ jobs:
             libxfixes-dev \
             libxi-dev \
             libxss-dev \
+            libxtst-dev \
             libxkbcommon-dev \
             libwayland-dev \
             libdecor-0-dev \
@@ -131,23 +132,4 @@ jobs:
             [ -f "$file" ] || continue
 
             mkdir -p \
-              "../package/changed-files/$(dirname "$file")"
-
-            cp "$file" "../package/changed-files/$file"
-          done
-
-          {
-            echo "Base commit: $BASE"
-            echo "Build commit: $(git rev-parse HEAD)"
-          } > ../package/BUILD-INFO.txt
-
-          tar -czf ../windowsarcadeloader-since-5dba7ff.tar.gz \
-            -C ../package .
-
-      - name: Upload archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: windowsarcadeloader-since-5dba7ff
-          path: windowsarcadeloader-since-5dba7ff.tar.gz
-          if-no-files-found: error
-          retention-days: 14
+              "../package/changed-files/$(dirname "$file
