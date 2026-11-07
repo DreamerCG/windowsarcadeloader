@@ -1,0 +1,196 @@
+name: Build Windows Arcade Loader - Full Package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: aderumier/windowsarcadeloader
+          ref: master
+          fetch-depth: 0
+          path: source
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
+
+          sudo apt-get install -y --no-install-recommends \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 \
+            build-essential \
+            gcc-mingw-w64-i686-posix \
+            gcc-mingw-w64-x86-64-posix \
+            mono-mcs \
+            pkg-config \
+            cmake \
+            git \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxfixes-dev \
+            libxi-dev \
+            libxss-dev \
+            libxtst-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libdecor-0-dev \
+            libdbus-1-dev \
+            libudev-dev \
+            libasound2-dev \
+            libpulse-dev \
+            libgl1-mesa-dev \
+            libegl1-mesa-dev \
+            libibus-1.0-dev
+
+      - name: Build and install SDL3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            https://github.com/libsdl-org/SDL.git /tmp/SDL
+
+          cmake -S /tmp/SDL -B /tmp/SDL/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSDL_SHARED=ON \
+            -DSDL_STATIC=OFF \
+            -DSDL_TESTS=OFF \
+            -DSDL_EXAMPLES=OFF
+
+          cmake --build /tmp/SDL/build --parallel 2
+          sudo cmake --install /tmp/SDL/build
+          sudo ldconfig
+
+          echo "=== Vérification SDL3 ==="
+          ldconfig -p | grep SDL3
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+          rustup target add \
+            i686-pc-windows-gnu \
+            x86_64-pc-windows-gnu
+
+      - name: Compile launcher and payloads
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Package complete distribution
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE="../package"
+          ARCHIVE="../windowsarcadeloader-full.tar.gz"
+
+          rm -rf "$PACKAGE"
+          mkdir -p "$PACKAGE"
+
+          echo "=== Vérification des fichiers indispensables ==="
+
+          if [ ! -f dist/arcade-launcher ]; then
+            echo "ERREUR : dist/arcade-launcher introuvable."
+            exit 1
+          fi
+
+          if [ ! -d dist/payloads ]; then
+            echo "ERREUR : dist/payloads introuvable."
+            exit 1
+          fi
+
+          if [ -z "$(find dist/payloads -type f -print -quit)" ]; then
+            echo "ERREUR : aucun payload compilé."
+            exit 1
+          fi
+
+          if [ ! -d systemprofiles ]; then
+            echo "ERREUR : le dossier systemprofiles est introuvable."
+            exit 1
+          fi
+
+          echo "=== Copie du launcher ==="
+          cp -a dist/arcade-launcher "$PACKAGE/"
+
+          echo "=== Copie de tous les payloads ==="
+          mkdir -p "$PACKAGE/payloads"
+          cp -a dist/payloads/. "$PACKAGE/payloads/"
+
+          echo "=== Copie de tous les profils système ==="
+          cp -a systemprofiles "$PACKAGE/systemprofiles"
+
+          echo "=== Vérification du contenu ==="
+
+          echo "Launcher :"
+          ls -lh "$PACKAGE/arcade-launcher"
+
+          echo "Nombre de payloads :"
+          find "$PACKAGE/payloads" -type f | wc -l
+
+          echo "Nombre de fichiers de profils système :"
+          find "$PACKAGE/systemprofiles" -type f | wc -l
+
+          echo "Taille des profils système :"
+          du -sh "$PACKAGE/systemprofiles"
+
+          echo "=== Création de l'archive ==="
+          tar -czf "$ARCHIVE" -C "$PACKAGE" .
+
+          echo "=== Vérification de l'archive ==="
+          tar -tzf "$ARCHIVE" > ../archive-content.txt
+
+          if ! grep -q '^\./arcade-launcher$' ../archive-content.txt; then
+            echo "ERREUR : arcade-launcher absent de l'archive."
+            exit 1
+          fi
+
+          if ! grep -q '^\./payloads/' ../archive-content.txt; then
+            echo "ERREUR : payloads absent de l'archive."
+            exit 1
+          fi
+
+          if ! grep -q '^\./systemprofiles/' ../archive-content.txt; then
+            echo "ERREUR : systemprofiles absent de l'archive."
+            exit 1
+          fi
+
+          echo "=== Archive générée ==="
+          ls -lh "$ARCHIVE"
+
+          echo "=== Premiers fichiers de l'archive ==="
+          head -200 ../archive-content.txt
+
+      - name: Upload full distribution
+        uses: actions/upload-artifact@v4
+        with:
+          name: windowsarcadeloader-full
+          path: windowsarcadeloader-full.tar.gz
+          if-no-files-found: error
+          retention-days: 14
