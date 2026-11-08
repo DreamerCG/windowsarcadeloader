@@ -1,6 +1,6 @@
-//! Sega's Aime NFC reader (837-15396, the reader of Bandai Namco's BNA1 cabinets, through Sega's
-//! `libamw.dll`) on a serial port, ported from bananatools' `board/sg-frame.c`, `sg-cmd.c`,
-//! `sg-nfc.c` and `sg-led.c` (public domain).
+//! Sega's Aime NFC reader (837-15396: Sega ALLS cabinets through amdaemon, Bandai Namco's BNA1
+//! cabinets through Sega's `libamw.dll`) on a serial port, ported from bananatools'
+//! `board/sg-frame.c`, `sg-cmd.c`, `sg-nfc.c` and `sg-led.c` (public domain).
 //!
 //! Frames: `E0`, then the escaped bytes (`D0 x` is `x + 1`) of `len addr seq cmd ...` and a
 //! checksum (the sum of the unescaped bytes from `len`). A request's body is a payload length
@@ -10,13 +10,13 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use wal_payload_common::log;
+use crate::log;
 
 /// The card on the reader (an Aime card's access code, 10 BCD bytes), until when.
 static CARD: Mutex<Option<([u8; 10], Instant)>> = Mutex::new(None);
 
 /// Puts the card of `access_code` (20 digits) on the reader for `time`.
-pub(crate) fn insert(access_code: &str, time: Duration) {
+pub fn insert(access_code: &str, time: Duration) {
     let d = access_code.as_bytes();
     if d.len() != 20 || !d.iter().all(u8::is_ascii_digit) {
         return log!("sgreader: access code {access_code:?} is not 20 digits");
@@ -26,6 +26,29 @@ pub(crate) fn insert(access_code: &str, time: Duration) {
         *b = (pair[0] - b'0') << 4 | (pair[1] - b'0');
     }
     *CARD.lock().unwrap() = Some((bcd, Instant::now() + time));
+}
+
+/// The card [`card_on_poll_after`] puts on the reader at the polls, until it is read.
+static ARMED: Mutex<Option<String>> = Mutex::new(None);
+/// When the armed card was last read: the button does not put it back for a game's length.
+static READ_AT: Mutex<Option<Instant>> = Mutex::new(None);
+const REARM_AFTER: Duration = Duration::from_secs(180);
+
+/// After player 1 presses `button`, puts the card of `access_code` on the reader whenever it is
+/// polled, until it is read (an automatic card: the card prompt after start).
+pub fn card_on_poll_after(access_code: &str, button: u32) {
+    let code = access_code.to_string();
+    std::thread::spawn(move || {
+        let mut held = false;
+        loop {
+            let pressed = crate::input(0).pressed(button);
+            if pressed && !held && READ_AT.lock().unwrap().is_none_or(|t| t.elapsed() >= REARM_AFTER) {
+                *ARMED.lock().unwrap() = Some(code.clone());
+            }
+            held = pressed;
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
 }
 
 fn card() -> Option<[u8; 10]> {
@@ -45,9 +68,18 @@ fn block(code: &[u8; 10], n: u8) -> [u8; 16] {
     b
 }
 
-/// The reader (generation 3): hardware and firmware versions, the LED board's info.
-const HW_VERSION: &[u8] = b"837-15396";
-const FW_VERSION: &[u8] = b"\x94";
+/// The reader's hardware and firmware versions: generation 3 (837-15396), or generation 2
+/// (`WAL_AIME_READER=15286`: 837-15286, firmware 0x92; Mario & Sonic at Rio 2016's amdaemon
+/// updates another one's firmware, then never polls it).
+fn versions() -> (&'static [u8], &'static [u8]) {
+    static GEN2: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *GEN2.get_or_init(|| std::env::var("WAL_AIME_READER").is_ok_and(|v| v.trim() == "15286")) {
+        (b"837-15286", b"\x92")
+    } else {
+        (b"837-15396", b"\x94")
+    }
+}
+/// The LED board's info.
 const LED_INFO: &[u8] = b"000-00000\xFF\x11\x40";
 
 const NFC: u8 = 0x00;
@@ -101,10 +133,17 @@ fn nfc(req: &[u8]) -> Option<Vec<u8>> {
     Some(match cmd {
         // reset: status 3
         0x62 => answer(req, 3, &[]),
-        0x30 => answer(req, 0, FW_VERSION),
-        0x32 => answer(req, 0, HW_VERSION),
+        0x30 => answer(req, 0, versions().1),
+        0x32 => answer(req, 0, versions().0),
         // poll: a MIFARE target (type 0x10, its 4-byte UID) or none
-        0x42 => match card() {
+        0x42 => match {
+            if let Some(code) = ARMED.lock().unwrap().clone()
+                && card().is_none()
+            {
+                insert(&code, Duration::from_secs(3));
+            }
+            card()
+        } {
             Some(code) => answer(req, 0, &[1, 0x10, 4, code[0], code[1], code[2], code[3]]),
             None => answer(req, 0, &[0]),
         },
@@ -114,6 +153,9 @@ fn nfc(req: &[u8]) -> Option<Vec<u8>> {
                 // the access code read: the card leaves the reader (a touch)
                 if n == 2 {
                     *CARD.lock().unwrap() = None;
+                    if ARMED.lock().unwrap().take().is_some() {
+                        *READ_AT.lock().unwrap() = Some(Instant::now());
+                    }
                     log!("sgreader: card read");
                 }
                 answer(req, 0, &block(&code, n))
@@ -169,7 +211,7 @@ fn handle(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// The reader on `port`, for the serial calls of `modules`.
-pub(crate) fn init(port: &str, modules: &[usize]) {
-    wal_payload_common::serial::install_in(port, handle, modules);
+pub fn init(port: &str, modules: &[usize]) {
+    crate::serial::install_in(port, handle, modules);
     log!("sgreader: Aime reader on {port}");
 }

@@ -54,6 +54,9 @@ static WIDTH: AtomicU32 = AtomicU32::new(0);
 static LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static TOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static HEIGHT: AtomicU32 = AtomicU32::new(0);
+/// With the Sinden frame: the size each top-level window asked for before it was forced to
+/// the screen (a 0x0 back buffer is the window's size: the game's, not the screen's).
+static REQUESTED: std::sync::Mutex<Vec<(usize, i32, i32)>> = std::sync::Mutex::new(Vec::new());
 static ORIG_SET_WINDOW_POS: AtomicUsize = AtomicUsize::new(0);
 static ORIG_MOVE_WINDOW: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SHOW_WINDOW: AtomicUsize = AtomicUsize::new(0);
@@ -69,10 +72,10 @@ pub fn init() {
     if std::env::var("WAL_HIDE_CURSOR").is_ok_and(|v| v.trim() == "1") {
         hide_cursor();
     }
-    if std::env::var("WAL_NO_MODE_CHANGE").is_ok_and(|v| v.trim() == "1") {
+    if crate::border::config().is_some() || std::env::var("WAL_NO_MODE_CHANGE").is_ok_and(|v| v.trim() == "1") {
         no_mode_change();
     }
-    if std::env::var("WAL_WINDOW_POPUP").is_ok_and(|v| v.trim() == "1") {
+    if crate::border::config().is_some() || std::env::var("WAL_WINDOW_POPUP").is_ok_and(|v| v.trim() == "1") {
         POPUP.store(true, Ordering::Relaxed);
         hook_create();
         unsafe {
@@ -92,7 +95,7 @@ pub fn init() {
         }
         log!("window: top-level windows created as popups");
     }
-    let Some((w, h)) = std::env::var("WAL_WINDOW_SIZE").ok().and_then(|v| {
+    let Some((w, h)) = std::env::var("WAL_WINDOW_SIZE").ok().or_else(|| crate::border::config().map(|_| "screen".into())).and_then(|v| {
         if v.trim() == "screen" {
             // primary monitor size (no display mode change in window mode)
             let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
@@ -123,6 +126,12 @@ pub fn init() {
     }) else {
         return;
     };
+    let (w,h) = if crate::border::config().is_some() {
+        LEFT.store(0, Ordering::Relaxed);
+        TOP.store(0, Ordering::Relaxed);
+        let (w,h) = crate::desktop::screen_size();
+        (w as u32,h as u32)
+    } else { (w,h) };
     WIDTH.store(w, Ordering::Relaxed);
     HEIGHT.store(h, Ordering::Relaxed);
     hook_create();
@@ -212,10 +221,18 @@ pub(crate) fn forced(hwnd: HWND, x: i32, y: i32, cx: i32, cy: i32) -> Option<(i3
         return None; // no WAL_WINDOW_SIZE
     }
     if cx == 0 && cy == 0 {
-        // collapsed on purpose (Time Crisis 5 entering its operator menu): left so
-        return None;
+        // collapsed on purpose (Time Crisis 5 entering its operator menu): left so. A window
+        // not shown yet is sized: Mach Storm sizes its new window from the work area less the
+        // screen, 0x0 on the Batocera box (Wine's work area 18 pixels taller than the screen)
+        if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) } != 0 {
+            log!("window: {hwnd:?} collapsed to 0x0 at {x},{y}: left so");
+            return None;
+        }
     }
     let (l, t) = (LEFT.load(Ordering::Relaxed), TOP.load(Ordering::Relaxed));
+    if cx > 0 && cy > 0 {
+        remember(hwnd, cx, cy);
+    }
     if (x, y, cx, cy) != (l, t, w, h) {
         log!("window: {hwnd:?} {cx}x{cy} at {x},{y} -> {w}x{h} at {l},{t}");
     }
@@ -364,6 +381,42 @@ fn drop_menu(hwnd: HWND, parent: HWND) -> HWND {
     hwnd
 }
 
+fn remember(hwnd: HWND, w: i32, h: i32) {
+    if hwnd.is_null() || crate::border::config().is_none() {
+        return;
+    }
+    let mut requested = REQUESTED.lock().unwrap();
+    requested.retain(|r| r.0 != hwnd as usize);
+    requested.push((hwnd as usize, w, h));
+}
+
+/// The size the top-level window `hwnd` asked for (Sinden frame: its real one is the screen's).
+/// The profile's `WAL_WINDOW_SIZE` (`WxH`) first: the size the game draws at (Gundam Spirits of
+/// Zeon asks for a screen-sized window, its 640x480 picture then in a corner of the back buffer).
+pub fn requested(hwnd: HWND) -> Option<(u32, u32)> {
+    let profile = std::env::var("WAL_WINDOW_SIZE").ok().and_then(|v| {
+        let (w, h) = v.trim().split_once('x')?;
+        Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?))
+    });
+    if profile.is_some_and(|(w, h)| w > 0 && h > 0) {
+        return profile;
+    }
+    let requested = REQUESTED.lock().unwrap();
+    requested.iter().find(|r| r.0 == hwnd as usize).map(|r| (r.1 as u32, r.2 as u32))
+}
+
+/// A new top-level window forced to another size: the size it asked for remembered.
+pub(crate) fn remember_created(hwnd: HWND, parent: HWND, style: u32, w: i32, h: i32, forced: (i32, i32)) {
+    if top_level(parent) && style & WS_CHILD == 0 && w > 0 && h > 0 && (w, h) != forced {
+        remember(hwnd, w, h);
+    }
+}
+
+fn created_window(hwnd: HWND, parent: HWND, style: u32, w: i32, h: i32, forced: (i32, i32)) -> HWND {
+    remember_created(hwnd, parent, style, w, h, forced);
+    drop_menu(hwnd, parent)
+}
+
 type CreateWindow<T> = unsafe extern "system" fn(u32, *const T, *const T, u32, i32, i32, i32, i32, HWND, P, P, P) -> HWND;
 type P = *mut c_void;
 
@@ -371,14 +424,16 @@ unsafe extern "system" fn create_window_a(
     ex: u32, class: *const u8, title: *const u8, style: u32, x: i32, y: i32, w: i32, h: i32, parent: HWND, menu: P, inst: P, param: P,
 ) -> HWND {
     let orig: CreateWindow<u8> = unsafe { std::mem::transmute(ORIG_CREATE_WINDOW_A.load(Ordering::Relaxed)) };
-    let (ex, style, x, y, w, h) = created(ex, style, x, y, w, h, parent);
-    drop_menu(unsafe { orig(ex, class, title, style, x, y, w, h, parent, menu, inst, param) }, parent)
+    let (ex2, style2, x2, y2, w2, h2) = created(ex, style, x, y, w, h, parent);
+    let hwnd = unsafe { orig(ex2, class, title, style2, x2, y2, w2, h2, parent, menu, inst, param) };
+    created_window(hwnd, parent, style, w, h, (w2, h2))
 }
 
 unsafe extern "system" fn create_window_w(
     ex: u32, class: *const u16, title: *const u16, style: u32, x: i32, y: i32, w: i32, h: i32, parent: HWND, menu: P, inst: P, param: P,
 ) -> HWND {
     let orig: CreateWindow<u16> = unsafe { std::mem::transmute(ORIG_CREATE_WINDOW_W.load(Ordering::Relaxed)) };
-    let (ex, style, x, y, w, h) = created(ex, style, x, y, w, h, parent);
-    drop_menu(unsafe { orig(ex, class, title, style, x, y, w, h, parent, menu, inst, param) }, parent)
+    let (ex2, style2, x2, y2, w2, h2) = created(ex, style, x, y, w, h, parent);
+    let hwnd = unsafe { orig(ex2, class, title, style2, x2, y2, w2, h2, parent, menu, inst, param) };
+    created_window(hwnd, parent, style, w, h, (w2, h2))
 }

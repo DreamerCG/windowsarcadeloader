@@ -11,12 +11,20 @@ rm -rf "$DEST/payloads" "$DEST/systemprofiles"
 cp -r dist/payloads "$DEST/payloads"
 cp -r systemprofiles "$DEST/systemprofiles"
 [ -f "$DEST/launcher.yaml" ] || cp tools/batocera/launcher.yaml "$DEST/"
+# Keep the RGS configgen integration in sync when installing into its emulator tree.
+if [ -d "$DEST/../../generators/windows-arcade-loader" ]; then
+    cp tools/batocera/windowsArcadeLoaderGenerator.py "$DEST/../../generators/windows-arcade-loader/"
+fi
+if [ -d "$DEST/../../../configs/emulationstation" ]; then
+    cp tools/batocera/es_features_windowsarcadeloader.cfg "$DEST/../../../configs/emulationstation/"
+fi
 # GUI: its wrapper and icon (the applications menu entry of the rgs tree points at them)
 cp tools/batocera/arcade-launcher-gui tools/batocera/icon.png "$DEST/"
 # prefixes ready to unpack: the shared one (tools/prefix-archive.sh) and games' own
 # (wine-prefix/dotnet11.tar.gz: the .NET 1.1 prefix of Need for Speed Underground and Carbon), if built
+# (not the test prefixes: links to full.tar.gz, a full copy each)
 for archive in wine-prefix/*.tar.gz; do
-    [ -f "$archive" ] || continue
+    [ -f "$archive" ] && [ ! -L "$archive" ] || continue
     mkdir -p "$DEST/wine-prefix"
     cp "$archive" "$DEST/wine-prefix/"
     # its version: prefixes unpacked from an older archive are updated

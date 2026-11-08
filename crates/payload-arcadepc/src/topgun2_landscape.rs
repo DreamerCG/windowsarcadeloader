@@ -1,4 +1,4 @@
-//! A portrait Unity cabinet game on a 16:9 screen: `WAL_UNITY_LANDSCAPE=1`.
+//! Top Gun 2 on a 16:9 screen: `WAL_UNITY_LANDSCAPE=1`.
 //!
 //! The game asks its cabinet's 1080x1920 (`Screen.SetResolution(1080, 1920, true)`) and lays
 //! its UI out on it (constant pixel size canvases, around the screen's center). In landscape:
@@ -17,20 +17,22 @@
 //! - **Bezel.** Drawn on the game's picture (`images_d3d11.rs`): the image's parts left and
 //!   right of its opening against the portrait column (9:16 of the height) at the screen's
 //!   middle, the image's scale the screen's height (the portrait setup's `WAL_BEZEL_FIT`), black
-//!   beyond; hidden while the game's `in_level` says a level plays (full screen).
+//!   beyond (`WAL_BEZEL_FIT=stretch`: those parts stretched to the screen's edges); hidden while
+//!   the game's `in_level` says a level plays (full screen).
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::images_d3d11::{self, Image, Quad};
-use crate::log;
-use crate::mono::{Mono, mono};
+use wal_payload_common::images_d3d11::{self, Image, Quad};
+use wal_payload_common::log;
+use wal_payload_common::mono::mono;
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
 /// `WAL_UNITY_LANDSCAPE=1`.
 pub fn enabled() -> bool {
-    std::env::var("WAL_UNITY_LANDSCAPE").is_ok_and(|v| v.trim() == "1")
+    std::env::var("WAL_ARCADEPC_BOARD").is_ok_and(|v| v.trim() == "jxcamera")
+        && std::env::var("WAL_UNITY_LANDSCAPE").is_ok_and(|v| v.trim() == "1")
 }
 
 /// The bezel's image (`WAL_BEZEL`, taken from the portrait setup).
@@ -45,6 +47,7 @@ pub fn prepare() {
     if let Ok(bezel) = std::env::var("WAL_BEZEL") {
         let _ = BEZEL.set(bezel.trim().to_string());
     }
+    let _ = STRETCH.set(std::env::var("WAL_BEZEL_FIT").is_ok_and(|v| v.trim() == "stretch"));
     for var in ["WAL_DESKTOP_SIZE", "WAL_BEZEL", "WAL_BEZEL_FIT"] {
         unsafe { std::env::remove_var(var) };
     }
@@ -151,6 +154,9 @@ fn ui_by_height() {
     }
 }
 
+/// `WAL_BEZEL_FIT=stretch`: the bezel's parts stretched to the screen's edges.
+static STRETCH: OnceLock<bool> = OnceLock::new();
+
 /// The bezel's parts' widths, in the image's heights.
 static GEOMETRY: OnceLock<(f32, f32)> = OnceLock::new();
 
@@ -199,6 +205,9 @@ fn bezel_quads() -> Vec<Quad> {
     let aspect = sh / sw;
     let column = aspect * 9.0 / 16.0;
     let (gl, gr) = (0.5 - column / 2.0, 0.5 + column / 2.0);
+    if STRETCH.get().is_some_and(|s| *s) {
+        return vec![Quad { image: 0, rect: [0.0, 0.0, gl, 1.0] }, Quad { image: 1, rect: [gr, 0.0, 1.0 - gr, 1.0] }];
+    }
     let (lw, rw) = (left * aspect, right * aspect);
     vec![
         Quad { image: 2, rect: [0.0, 0.0, (gl - lw).max(0.0), 1.0] },
@@ -206,35 +215,6 @@ fn bezel_quads() -> Vec<Quad> {
         Quad { image: 0, rect: [gl - lw, 0.0, lw, 1.0] },
         Quad { image: 1, rect: [gr, 0.0, rw, 1.0] },
     ]
-}
-
-/// Reads a pointer-sized value at `at` (0: none).
-pub fn read_ptr(at: usize) -> usize {
-    if at == 0 { 0 } else { unsafe { (at as *const usize).read_volatile() } }
-}
-
-/// The class (`MonoClass*`) of the object at `obj`: its vtable's first field.
-pub fn class_of(obj: usize) -> usize {
-    read_ptr(read_ptr(obj))
-}
-
-/// A Mono array's first element's offset (its header: vtable, sync, bounds, length).
-pub const ARRAY_DATA: usize = 4 * size_of::<usize>();
-
-/// Waits for Mono and UnityEngine's game assembly (`Assembly-CSharp`), then calls `f` with them
-/// on this thread (attached).
-pub fn with_game_assembly(f: impl FnOnce(&'static Mono, *mut std::ffi::c_void) + Send + 'static) {
-    std::thread::spawn(move || {
-        for _ in 0..3000 {
-            std::thread::sleep(Duration::from_millis(100));
-            let Some(m) = mono() else { continue };
-            let image = m.image("Assembly-CSharp");
-            if image.is_null() || !m.attach() {
-                continue;
-            }
-            return f(m, image);
-        }
-    });
 }
 
 #[cfg(test)]

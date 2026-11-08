@@ -19,6 +19,7 @@ mod players;
 mod rundir;
 mod script;
 mod server;
+mod sinden;
 mod squashfs;
 mod systems;
 mod wheels;
@@ -284,6 +285,35 @@ fn stretched(conf: &config::GamescopeConfig, stretch: bool) -> config::Gamescope
 }
 
 /// `cmd` run inside gamescope, with its environment and directory.
+/// `cmd` started by a shell after the `background` programs (left running) and `wait_ms`.
+fn with_background(cmd: Command, background: Vec<Command>, wait_ms: u64) -> Command {
+    let quote = |s: &std::ffi::OsStr| format!("'{}'", s.to_string_lossy().replace('\'', "'\\''"));
+    let mut script = String::new();
+    for bg in &background {
+        if let Some(dir) = bg.get_current_dir() {
+            script += &format!("(cd {} && ", quote(dir.as_os_str()));
+        } else {
+            script += "(";
+        }
+        script += &std::iter::once(bg.get_program()).chain(bg.get_args()).map(quote).collect::<Vec<_>>().join(" ");
+        script += ") & ";
+    }
+    // the game's lines appended to the payload log the background program created
+    script += &format!("sleep {}; WAL_LOG_APPEND=1 exec \"$@\"", wait_ms as f64 / 1000.0);
+    let mut sh = Command::new("sh");
+    sh.arg("-c").arg(script).arg("sh").arg(cmd.get_program()).args(cmd.get_args());
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => sh.env(k, v),
+            None => sh.env_remove(k),
+        };
+    }
+    if let Some(dir) = cmd.get_current_dir() {
+        sh.current_dir(dir);
+    }
+    sh
+}
+
 fn gamescope(conf: &config::GamescopeConfig, cmd: Command) -> Command {
     let mut gs = Command::new(&conf.bin);
     if conf.width > 0 && conf.height > 0 {
@@ -339,6 +369,7 @@ struct RunOptions {
 }
 
 fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> Result<()> {
+    let border = sinden::select(profile)?;
     let dry_run = opts.dry_run;
     raise_open_files_limit();
     if profile.exe.is_empty() {
@@ -554,8 +585,31 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
         wine.set_env(k, &screen_placeholders(v, screen, &profile.env));
     }
 
+    wine.set_env("WAL_SINDEN_BORDER", if border.is_some() { "1" } else { "0" });
+    if let Some(border) = border {
+        // Physical geometry is shared with the renderer even if a game changes its mode.
+        wine.set_env("WAL_SINDEN_SCREEN", &format!("{}x{}", screen.0, screen.1));
+        eprintln!("sinden: border {}% color #{:06x}", border.percent, border.rgb);
+    }
     let game_exe = wine.windows_path(&run_exe_dir.join(exe_name));
     let screen_args = |args: &[String]| -> Vec<String> { args.iter().map(|a| screen_placeholders(a, screen, &profile.env)).collect() };
+    // a program of the profile's `background` list (its command line from the game directory)
+    let background_command = |program: &str| -> Option<Command> {
+        let words: Vec<String> = screen_args(&program.split(' ').filter(|w| !w.is_empty()).map(String::from).collect::<Vec<_>>());
+        let (exe, args) = words.split_first()?;
+        let exe_path = wine.windows_path(&run_exe_dir.join(exe));
+        let mut cmd = match loader {
+            Some(payload) => {
+                let mut cmd = wine.command(wine.windows_path(&run_exe_dir.join("wal-loader.exe")));
+                let at = if payload.contains(['/', '\\']) { run_dir.join(payload) } else { run_exe_dir.join(payload) };
+                cmd.arg(wine.windows_path(&at)).arg(&exe_path);
+                cmd
+            }
+            None => wine.command(&exe_path),
+        };
+        cmd.args(args).current_dir(&run_exe_dir);
+        Some(cmd)
+    };
     // the game command with these arguments; `relaunched`: started again at the payload's
     // request (WAL_RELAUNCH=1)
     // `exe`: another executable of the game directory (a relaunch to the test menu program)
@@ -588,6 +642,11 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
         // KEEP ASPECT RATIO off: gamescope's fit scaler stretches instead
         let stretch = profile.env.get("WAL_KEEP_ASPECT_RATIO").is_some_and(|v| v.trim() == "0");
         if opts.headless {
+            // the background programs in the same gamescope (one X display: a Wine call crossing
+            // two, e.g. ClipCursor, ends the game with an X BadWindow error)
+            if !relaunched && !profile.background.is_empty() {
+                cmd = with_background(cmd, profile.background.iter().filter_map(|p| background_command(p)).collect(), profile.background_wait_ms);
+            }
             cmd = gamescope(&stretched(&headless_gamescope(&profile.gamescope), stretch), cmd);
         } else if profile.gamescope.enabled {
             cmd = gamescope(&stretched(&profile.gamescope, stretch), cmd);
@@ -615,6 +674,7 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
     let stop = stop_flag()?;
     let server = server::Server::start(profile.port)?;
     let mut hub = input::Hub::new(profile)?;
+    hub.border = border.map(|b| (b, [screen.0, screen.1]));
     for helper in &profile.pre_launch {
         let helper_path = run_exe_dir.join(helper);
         let helper_path = wine.windows_path(&helper_path);
@@ -628,6 +688,21 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
             bail!("pre-launch helper {helper} failed: {status}");
         }
     }
+    // programs left running beside the game (Sega ALLS's amdaemon.exe), with the game's payload
+    // when the system starts it through wal-loader; ended with the game's leftovers (headless:
+    // started inside the game's gamescope instead)
+    if !opts.headless {
+        for mut cmd in profile.background.iter().filter_map(|p| background_command(p)) {
+            std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+            eprintln!("launcher: starting background program {:?}", cmd.get_program());
+            cmd.spawn().with_context(|| format!("starting background program {:?}", cmd.get_program()))?;
+        }
+    }
+    if !profile.background.is_empty() && !opts.headless {
+        std::thread::sleep(Duration::from_millis(profile.background_wait_ms));
+        // the payload log the background program created: the game's lines appended to it
+        cmd.env("WAL_LOG_APPEND", "1");
+    }
     let mut child = cmd.spawn().context("starting wine")?;
     // its window to the front (a frontend keeping the focus hid it)
     let mut focus = if opts.headless { None } else { focus::Focus::new(child.id()) };
@@ -635,6 +710,8 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
     let mut last = InputFrame::default();
     let mut last_sent = Instant::now();
     let mut killing = false;
+    // when the exit was asked, until the game's process group is killed itself
+    let mut kill_asked: Option<Instant> = None;
     let mut last_check = Instant::now();
     let status = loop {
         hub.poll(Duration::from_millis(4));
@@ -663,7 +740,16 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
         if (hub.exit_requested || stop.load(Ordering::SeqCst)) && !killing {
             eprintln!("launcher: stopping the game");
             killing = true;
+            kill_asked = Some(Instant::now());
             let _ = wine.wineserver("-k");
+        }
+        // the game still there: `wineserver -k` found another server (the prefix extracted
+        // again while the game ran: the server folder is named after the prefix directory's
+        // inode, the game's server stayed in the old one)
+        if kill_asked.is_some_and(|t| t.elapsed() > Duration::from_secs(5)) {
+            eprintln!("launcher: the game still runs 5 s after wineserver -k: its processes killed");
+            kill_asked = None;
+            let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).stderr(std::process::Stdio::null()).status();
         }
         if let Some(status) = child.try_wait()? {
             // a game ending to be started again with other arguments (The Swarm: each stage
@@ -671,14 +757,23 @@ fn run(profile: &Profile, opts: &RunOptions, script: Option<script::Script>) -> 
             if let Some(args) = server.take_relaunch().filter(|_| !killing) {
                 eprintln!("launcher: game exited ({status}), started again: {args}");
                 let _ = Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]).stderr(std::process::Stdio::null()).status();
-                // `exe=<file> args`: that executable of the game directory, with only these
-                // arguments (the test menu program); otherwise the game with its own plus these
+                // `exe=<file> [cwd=<dir>] args`: that executable of the game directory, with only
+                // these arguments (the test menu program), run from that folder of the game
+                // directory (its batch file's pushd: Virtua Fighter eSports' vf5fs\vfes.exe);
+                // otherwise the game with its own plus these
                 let words: Vec<&str> = args.split(' ').filter(|a| !a.is_empty()).collect();
-                let (exe, args): (Option<&str>, Vec<String>) = match words.first().and_then(|w| w.strip_prefix("exe=")) {
-                    Some(exe) => (Some(exe), words[1..].iter().map(|a| a.to_string()).collect()),
-                    None => (None, profile.args.iter().cloned().chain(words.iter().map(|a| a.to_string())).collect()),
+                let (exe, cwd, args): (Option<&str>, Option<&str>, Vec<String>) = match words.first().and_then(|w| w.strip_prefix("exe=")) {
+                    Some(exe) => {
+                        let cwd = words.get(1).and_then(|w| w.strip_prefix("cwd="));
+                        (Some(exe), cwd, words[1 + cwd.is_some() as usize..].iter().map(|a| a.to_string()).collect())
+                    }
+                    None => (None, None, profile.args.iter().cloned().chain(words.iter().map(|a| a.to_string())).collect()),
                 };
-                child = game_command(&args, true, exe).spawn().context("starting wine")?;
+                let mut cmd = game_command(&args, true, exe);
+                if let Some(cwd) = cwd {
+                    cmd.current_dir(run_exe_dir.join(cwd));
+                }
+                child = cmd.spawn().context("starting wine")?;
                 focus = if opts.headless { None } else { focus::Focus::new(child.id()) };
                 continue;
             }

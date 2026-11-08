@@ -39,8 +39,16 @@
 //! `WAL_TYPEX_JVS_LAYOUT=wontertainment`: Won!Tertainment Music Channel's cabinet switches
 //! (see `Board::wontertainment`).
 //!
+//! `WAL_TYPEX_JVS_TICKETS=<output>,btn<n>`: a ticket dispenser: while general purpose output
+//! `<output>` (1-24: output 1 is the first byte's 0x80) runs its motor, player 1's switch
+//! `btn<n>` (as `WAL_TYPEX_JVS_HELD`) pulses once per ticket, its notch sensor (see
+//! [`Tickets`]; Sonic Dash Extreme: `8,btn4`).
+//!
 //! `WAL_TYPEX_JVS_LAYOUT=k-on`: K-On!'s card dispenser on player 1's switch byte 2 and the
 //! general purpose outputs (see [`Dispenser`]).
+//!
+//! `WAL_TYPEX_JVS_LAYOUT=levers`: Mario & Sonic at the Rio 2016 Olympic Games' two levers, each
+//! 8 direction sensors (see [`levers`]).
 //!
 //! `WAL_TYPEX_JVS_LAYOUT=battle-gear` / `battle-gear-pro`: Battle Gear 4's key reader (Taito
 //! commands `6A`-`70`); `-pro` adds the professional cabinet's second board (node 2, its
@@ -169,9 +177,13 @@ struct Board {
     cyber_diver: bool,
     /// Pleasant Goat: the dispenser-ready signal is switch byte 3 bit 0x40.
     happy_playground: bool,
+    /// `WAL_TYPEX_JVS_LAYOUT=levers`: see [`levers`].
+    levers: bool,
     /// `WAL_TYPEX_JVS_LAYOUT=k-on`: K-On!'s card dispenser on player 1's switch byte 2 (ready
     /// 0x80, jam 0x40, empty 0x20) and output byte 1 (dispense pulse 0x08): see [`Dispenser`].
     dispenser: Option<Dispenser>,
+    /// `WAL_TYPEX_JVS_TICKETS`: a ticket dispenser (see [`Tickets`]).
+    tickets: Option<Tickets>,
     /// `WAL_TYPEX_JVS_LAYOUT=wontertainment`: Won!Tertainment Music Channel's cabinet for
     /// `20 02 02` (found with its I/O test): system byte SELECT 0x80; player 1's first byte
     /// ENTER 0x40, door 0x20, the card dispenser's ENABLE 0x10 (on: without it error 100,
@@ -213,6 +225,45 @@ struct Board {
     addresses: u8,
 }
 
+/// The sensors of a lever's 8 directions, clockwise from up (switch byte 1, 2): right, left, up,
+/// down, buttons 1-4 (Mario & Sonic at Rio 2016's input test).
+const LEVER_SENSORS: [(u8, u8); 8] = [(0x04, 0), (0x08, 0), (0x20, 0), (0x10, 0), (0x02, 0), (0x01, 0), (0, 0x80), (0, 0x40)];
+
+/// Direction (0 up, clockwise in eighths) of a stick position (y down), `None` near the center.
+fn lever_direction(x: f32, y: f32) -> Option<usize> {
+    if x.hypot(y) < 0.5 {
+        return None;
+    }
+    let turns = x.atan2(-y) / std::f32::consts::TAU;
+    Some(((turns * 8.0).round() as i32).rem_euclid(8) as usize)
+}
+
+/// `WAL_TYPEX_JVS_LAYOUT=levers`: Mario & Sonic at the Rio 2016 Olympic Games' cabinet, one
+/// player holding two levers (player 1's and player 2's switches), each read by 8 photo sensors
+/// around it, one per direction ([`LEVER_SENSORS`]). The left lever is player 1's directions
+/// (its d-pad, keys, its left stick through `stick_as_dpad`), the right lever player 2's
+/// directions or player 1's right stick. Their buttons, the foot and jump sensors are
+/// `native_map` entries (`start`, `btn5`-`btn8`, `p2start`, `p2btn5`-`p2btn8`).
+fn levers(players: &mut [(u8, u8, bool, bool, u8)], p1: &StickState) {
+    let digital = |b: u8| {
+        let axis = |neg: u8, pos: u8| (b & pos != 0) as i32 as f32 - (b & neg != 0) as i32 as f32;
+        (axis(0x08, 0x04), axis(0x20, 0x10))
+    };
+    let (lx, ly) = digital(players[0].0);
+    let (mut rx, mut ry) = digital(players[1].0);
+    if (rx, ry) == (0.0, 0.0) {
+        (rx, ry) = (p1.axis(Axis::RightX) as f32 / 32767.0, p1.axis(Axis::RightY) as f32 / 32767.0);
+    }
+    for (p, dir) in players.iter_mut().zip([lever_direction(lx, ly), lever_direction(rx, ry)]) {
+        p.0 &= !0x3F;
+        p.1 &= !0xC0;
+        if let Some((b0, b1)) = dir.map(|d| LEVER_SENSORS[d]) {
+            p.0 |= b0;
+            p.1 |= b1;
+        }
+    }
+}
+
 /// Analog channel source: player 1's axis, inverted (`-axis`) or its positive half only
 /// (`+axis`: 0 at the center and below, a clutch on a stick axis).
 #[derive(Clone, Copy, Debug)]
@@ -248,6 +299,52 @@ impl Dispenser {
 
     fn ready(&self) -> bool {
         self.dispensed.is_none_or(|t| t.elapsed() >= Self::OUT)
+    }
+}
+
+/// A ticket dispenser (`WAL_TYPEX_JVS_TICKETS`): its motor on a general purpose output, its
+/// notch sensor on a switch, off at rest, on for the second half of each ticket's time while
+/// the motor runs (10 tickets per second, a real dispenser's pace; the game counts the
+/// pulses and stops the motor). Never empty, never jammed.
+struct Tickets {
+    /// The motor's output: byte index of the `32` data, bit mask.
+    output: (usize, u8),
+    /// The notch sensor: player 1's switch bytes 1, 2, 3 masks.
+    notch: (u8, u8, u8),
+    /// Since when the motor runs.
+    running: Option<std::time::Instant>,
+}
+
+impl Tickets {
+    const TICKET: std::time::Duration = std::time::Duration::from_millis(100);
+
+    fn parse(spec: &str) -> Option<Tickets> {
+        let (output, switch) = spec.split_once(',')?;
+        let output: usize = output.trim().parse().ok().filter(|o| (1..=24).contains(o))?;
+        let notch = held(switch);
+        log!("jvs: ticket dispenser, motor on output {output}, notch sensor {}", switch.trim());
+        Some(Tickets { output: ((output - 1) / 8, 0x80 >> ((output - 1) % 8)), notch, running: None })
+    }
+
+    /// The `32` data written: the motor started or stopped.
+    fn output(&mut self, data: &[u8]) {
+        let on = data.get(self.output.0).is_some_and(|b| b & self.output.1 != 0);
+        match (on, self.running) {
+            (true, None) => self.running = Some(std::time::Instant::now()),
+            (false, Some(t)) => {
+                log!("jvs: ticket motor ran {} ms", t.elapsed().as_millis());
+                self.running = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// The notch sensor now: on during the second half of each ticket's time.
+    fn notch(&self) -> (u8, u8, u8) {
+        match self.running {
+            Some(t) if (t.elapsed().as_millis() % Self::TICKET.as_millis()) >= Self::TICKET.as_millis() / 2 => self.notch,
+            _ => (0, 0, 0),
+        }
     }
 }
 
@@ -360,7 +457,9 @@ pub fn init(default_port: &str) {
         elevator_action,
         cyber_diver: std::env::var("WAL_TYPEX_JVS_LAYOUT").is_ok_and(|v| v == "cyber-diver"),
         happy_playground: layout == "happy-playground",
+        levers: layout.trim() == "levers",
         dispenser: (layout.trim() == "k-on").then(Dispenser::default),
+        tickets: std::env::var("WAL_TYPEX_JVS_TICKETS").ok().and_then(|v| Tickets::parse(&v)),
         wontertainment: layout.trim() == "wontertainment",
         won_output: 0,
         won_dispensed: None,
@@ -644,12 +743,21 @@ fn process(packet: &[u8]) -> Vec<u8> {
     players[0].0 |= board.held.0;
     players[0].1 |= board.held.1;
     players[0].4 |= board.held.2;
+    if board.levers {
+        levers(&mut players, &sticks[0]);
+    }
     if board.happy_playground {
         players[0].4 |= 0x40;
     }
     if let Some(d) = &board.dispenser {
         // the dispenser's lines replace buttons 3-5 (a held button would read as a jam)
         players[0].1 = (players[0].1 & !0xE0) | if d.ready() { 0x80 } else { 0 };
+    }
+    if let Some(t) = &board.tickets {
+        let notch = t.notch();
+        players[0].0 |= notch.0;
+        players[0].1 |= notch.1;
+        players[0].4 |= notch.2;
     }
     let test = players.iter().any(|p| p.2);
     if let Some((masks, half)) = board.pulse {
@@ -835,6 +943,9 @@ fn process(packet: &[u8]) -> Vec<u8> {
                 (4, vec![])
             }
             0x32 => {
+                if let Some(t) = &mut board.tickets {
+                    t.output(cmds.get(i + 2..(i + 2 + arg(1) as usize).min(cmds.len())).unwrap_or(&[]));
+                }
                 if let Some(d) = &mut board.dispenser {
                     d.output(arg(2));
                 }

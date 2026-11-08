@@ -16,8 +16,13 @@ name: null
 args: []
 # Windows executables to run from the game directory before the game starts.
 pre_launch: []
+# Programs of the game directory ("<exe> [args]") started before the game and left running
+# beside it (Sega ALLS's amdaemon.exe), with the system's payload when it is started through
+# wal-loader; the game starts background_wait_ms later.
+background: []
+background_wait_ms: 3000
 
-runner: GE-Proton11-10-x86_64
+runner: GE-Proton11-12-x86_64
 runners_dir: wine-runners
 # One prefix for all the games, with every game's winetricks verbs preinstalled
 # (prefix_tricks). A game that cannot share it sets its own prefix (and prefix_tricks).
@@ -42,7 +47,7 @@ wine_debug: "-all"
 # d3d8-11/dxgi through the runner's DXVK (false: wine builtin wined3d).
 dxvk: true
 # Runner whose DXVK is used when the runner has none (plain wine builds), e.g.
-# GE-Proton11-10-x86_64. Empty: none.
+# GE-Proton11-12-x86_64. Empty: none.
 dxvk_from: ""
 # DirectDraw: wine (builtin), d7vk (runner's ddraw->vulkan), dgvoodoo (the game's DDraw.dll).
 graphics: wine
@@ -124,6 +129,12 @@ registry: []
 fonts: []
 # Extra environment variables of the game process (system options, wine settings).
 env:
+  # Native Sinden frame: auto for gun games with a Sinden attached, "1" always, "0" off.
+  # Size: thin/medium/big (Batocera), or percent of screen width (0.1..10).
+  # Color: white/red/green/blue or #RRGGBB. The whole picture fits inside the frame.
+  WAL_SINDEN_BORDER: "auto"
+  WAL_SINDEN_BORDER_SIZE: "medium"
+  WAL_SINDEN_BORDER_COLOR: "white"
   # Direct3D 9/8 presents held to 60 per second: arcade games are timed by frames and ran
   # too fast where vsync is not given (high refresh rate screens, VRR, windowed games on
   # some drivers). "0": no limit.

@@ -50,6 +50,8 @@ crates/
   payload-rawthrills/      Raw Thrills PC payload (JAMMA USB board reports), loaded by wal-loader
   payload-ringedge/        Sega RingEdge payload (amLib devices, keychip/master PCP services), loaded by wal-loader
   payload-segashell/       Sega Amusements Shell payload (the Shell's TCP service, the I/O board), loaded by wal-loader
+  payload-alls/            Sega ALLS payload (amdaemon's keychip, USB I/O board, network; the LED board), loaded by wal-loader in amdaemon and the game
+  payload-seganu/          Sega Nu payload (amLib's AMEX board devices, keychip driver, system registry values; JVS), loaded by wal-loader
   payload-nesica/          NESiCAxLive payload = replacement iDmacDrv32.dll
     iDmacDrv32.def         export ordinals of the original driver (see §6.2)
     src/news.png           NESYS news picture
@@ -71,7 +73,7 @@ games/, wine-runners/, wine-prefix/   local data (git-ignored)
   for future 64-bit games.
 * `./build.sh` (env `PROFILE=dev` for debug builds) produces `dist/arcade-launcher` and
   `dist/payloads/wal_nesica.dll`. A new payload must be added to `build.sh`.
-* Wine runner: the default runner is `GE-Proton11-10-x86_64` (`wine-runners/`); **all game
+* Wine runner: the default runner is `GE-Proton11-12-x86_64` (`wine-runners/`); **all game
   tests must run on it**. When rebuilding a wine DLL (e.g. `quartz.dll` hotfixes), build from
   the GE-Proton source tree (local clone `~/code/protonge`, GE patch set applied) — never from
   plain upstream wine: the GE video stack (`quartz` + `winedmo`/`msdmo`, GStreamer-backed) only
@@ -348,7 +350,28 @@ game that cannot share the prefix sets its own `prefix` (and `prefix_tricks`).
 
 Runner hotfixes: `tools/runner-hotfixes.py [runner...]` patches known bugs of runner builds in
 place (exact byte match, `<file>.orig` backup, idempotent), until the fix ships in a release.
-GE-Proton11-10 (default runner since 2026-10-19) ships every fix of the GE-Proton11-7 list below
+
+GE-Proton11-12 (default runner since 2026-11-08) is the GitHub release (`GE-Proton11-12-x86_64.tar.gz`,
+sha512 checked) plus `bin/winetricks`, with the PE DLLs `winedmo`, `quartz`, `mfreadwrite`,
+`mfsrcsnk`, `mfasfsrcsnk`, `mfmp4srcsnk` (i386 and x86_64) rebuilt from the GE-Proton11-12 tree
+(`~/code/wal-wine-build-1112`: the wine section of the tag's `protonprep-valve-staging.sh`, the
+same `configure` as below, `make dlls/<dll>/all`, `strip --strip-debug`; originals in
+`hotfix-backups/<arch>-windows/`). 11-12 ships every earlier fix up to GE patch 0109; added:
+0110/0111 (Pokkén Tournament movies), 0112 (Wasteland Racers 2071 attract movie), and from
+`~/code/protonge` branch `winedmo-video-decoder-system-memory-fallback`:
+* 0113: the MPEG-4 Part 2 decoder's YUY2 D3D11 samples, which DXVK cannot create, replaced by
+  system memory samples (`init_allocator` failed with `E_INVALIDARG`, every frame lost).
+* 0114: the video processor converts system memory input on the CPU into its D3D output sample
+  (its re-enabled D3D11 path failed and fell back to a memory sample: Unity's VideoPlayer wants
+  `IMFDXGIBuffer`).
+* 0115: a video decoder takes input again once its drain completed (the source reader drained it
+  a second time when a sample request raced the seek back to 0: a looped movie stopped on its last
+  frame after one to a few loops, 11-10 too).
+Big Foot Crush's attract video needs all three. The release's unix `winedmo.so` is kept (same
+24-entry unix call table as the tree's build).
+
+GE-Proton11-10 (default runner 2026-10-19 to 2026-11-08, still in rgs for the winebat games pinned
+to it) ships every fix of the GE-Proton11-7 list below
 (GE patches 0072-0075, 0080, 0091, the upstream demuxer-destroy fix, no mountmgr serial probe);
 it only carries `winedmo-sws-padded-output`:
 * `winedmo-sws-padded-output` (GE-Proton11-10 `winedmo.so`, x86_64 and i386, rebuilt from the
@@ -471,7 +494,10 @@ The game is started from there (cwd + `C:\wal\...\game.exe`).
 `run()`: load profile → system → `Wine::new` → resolve exe → check payload files → prefix +
 graphics → run dir → payload env → print summary → (dry run stops here) → TCP server →
 input hub → spawn wine (in gamescope when enabled) → loop { poll input 4 ms, broadcast on change / 100 ms, exit combo or
-Ctrl-C/SIGTERM → `wineserver -k`, child exit → break } → `wineserver -k` for leftovers.
+Ctrl-C/SIGTERM → `wineserver -k` (the game still running 5 s later: its process group killed;
+the shared prefix extracted again during the run gave the game's server another folder, the
+server folder being named after the prefix directory's inode), child exit → break } →
+`wineserver -k` for leftovers.
 
 Subcommands: `run` (default), `input-test` (prints the merged sticks; works without a game
 profile), `show` (merged profile).
@@ -3965,7 +3991,9 @@ assembly (`Managed/Original.rar`, the same file); the executable renamed (`TopGu
   `wal-loader64.exe`: before Wine's X11 driver), Unity's window messages filtered once
   `UnityPlayer.dll` is loaded.
 - **Landscape (`WAL_UNITY_LANDSCAPE=1`, the profile's default; "0": the cabinet's portrait;
-  `payload-common`'s `unity_landscape.rs`, the game's level test in `jxcamera.rs`).**
+  `payload-arcadepc`'s `topgun2_landscape.rs`, the game's level test in `jxcamera.rs`).**
+  This dynamic display patch is private to Top Gun 2 (`WAL_ARCADEPC_BOARD=jxcamera`);
+  other ArcadePC games use their standard bezel behavior.
   The levels full screen on a 16:9 screen, not stretched; the menus, attract and loading
   screens as on the cabinet, a portrait column in the bezel. Before the common start, the
   portrait setup is undone (`WAL_DESKTOP_SIZE`, `WAL_BEZEL`, `WAL_BEZEL_FIT` removed from the
@@ -4784,8 +4812,15 @@ bridge (`Framework_Call_JNI`) is empty, nothing comes from the MCU.
   the editor does. `Mono::replace` has a 32-bit jump for this game.
 - **Picture.** Portrait (the logo, truck select and counters are laid out on 9:16): a 1080x1920
   fake desktop, fitted on the screen, black around.
-- **Not in the dump.** AVPro's Windows backend (the attract video's area stays empty) and the
-  maps' `SLFramework/Inis` tools (`IniManager`'s initializer also fails on `AndroidJavaObject`: the
+- **Attract video.** AVPro Video has only its Android backend here (no native plugin): its
+  `DisplayUGUI` stayed grey. `payload-common`'s `avpro.rs` replaces `DisplayUGUI.get_mainTexture`:
+  a Unity `VideoPlayer` added to the `MediaPlayer`'s object plays its `m_VideoPath` from the
+  streaming assets (`m_Loop`, no sound, `APIOnly`), its texture is the display's (black until the
+  first frame; `LateUpdate` sees the change). The movie is MPEG-4 Part 2: the runner's winedmo
+  needs GE patches 0113-0115 (GE-Proton11-12 runner, §5.3).
+  The payload attaches to Mono only once `Assembly-CSharp` is loaded (attaching while Mono
+  started crashed the game).
+- **Not in the dump.** The maps' `SLFramework/Inis` tools (`IniManager`'s initializer also fails on `AndroidJavaObject`: the
   update check and these tools are skipped, harmlessly).
 
 ### 6.3k Adrenaline Amusements (`crates/payload-adrenaline`)
@@ -5416,6 +5451,26 @@ whole stack under the real amdaemon; here the payload replaces the library inste
   client built in): no patch. Test program `gametest.exe` (.NET WPF, 32-bit). The Aime prompt's
   default is neither button (left then button 1 plays with the card); button 1 held on the title
   shows the card's access code.
+* **Umihara Kawase Fresh! for AC** (`App\umifresh.exe`, 32-bit OpenGL, game id SDGU, the
+  profile's `WAL_APM3_GAME_ID`; the ABAAS game server client built in): no patch. Test program
+  `gametest.exe` (.NET WPF). The dump's own `apm_x86.dll` (with `apm3_config.exe`,
+  `apm3_input.bin`) is replaced by the payload. On the stage list START opens the controls
+  settings, button 1 decides. Jump (push05, b5 by default: Z) on b1 (left Ctrl, pad A), b1's
+  push01 on b5 (the profile's `native_map`, user's choice).
+* **Tapping Skill Test** (`GL_pc.exe`: the dump is the FJ11 update `SDFJ_FJ11_..._1_FJ10`
+  flattened, the FJ10 dump's `GS3.PAR` plus `GS3_V10100.PAR`; 64-bit Direct3D 11, game id SDFJ). A touch screen game
+  (tap, swipe, pinch): its window procedure takes `WM_POINTER*` (`GetPointerInfo`) and the plain
+  mouse messages alike (`WAL_APM3_TOUCH`), and the mouse wheel as the two finger pinch
+  (`WM_MOUSEWHEEL` at the cursor: the `pinch_in` / `pinch_out` natives post wheel notches,
+  `input_filter::post_wheel`, its mark in `wParam`'s low word, the high word being the delta;
+  the launcher's mouse wheel sources `wheel_up` / `wheel_down`, a notch held 64 ms, on them).
+  The game zooms the word under the cursor by 15% a notch (its box hit-tested, 0x14015b7e0).
+  The game and its test program `GL_pc_test.exe` never call the switch API: they read the I/O
+  board as winmm joystick 0 (`joyGetPosEx` buttons, `WAL_APM3_JOYSTICK=1`, `joystick.rs`: the
+  IO4's two button words, test bit 9, service 6, home 28, start 7, up 5 down 4 left 3 right 2,
+  push01..08 bits 1, 0, 15..10; segatools' `apm3hook/io4.c`). No ABAAS link: the network status
+  functions' reads of the link-ready flags patched (`WAL_APM3_NO_LINK_PATCHES`, no "Aime /
+  versus unavailable" banner).
 * **Virtua Fighter 3tb Online** (`App\runtime\media\arashi.exe`, 64-bit Direct3D 11, game id
   SDJQ from the dump's `app.json`; the Model 3 game runs in `pre3\pre3-pxd-w64-Retail.dll`): no
   patch. Test mode = the same program (`gametest.bat`): `-wal-test`. The ABAAS game server holds
@@ -5427,6 +5482,23 @@ whole stack under the real amdaemon; here the payload replaces the library inste
   profile's `WAL_APM3_NO_LINK_PATCHES` make only the icon's link test answer 1; patching slot
   `0x2e0` itself also enabled the versus menus (a national match waiting for a server). Found by
   a crash probe on the `AllnetAuth_isGood` thunk (`0x1412641a0`): its caller is the icon code.
+* **Virtua Fighter eSports** (`eve.exe`, 64-bit Direct3D 11): RGG's Dragon Engine front end (menus,
+  Aime screens, fights' presentation) around the VF5 Final Showdown core it loads from `vf5fs\`
+  (`vf5fs-pxd-w64-Retail_APM3.dll` + `vf5fs_data.par`). eve.exe itself has no network code: the
+  ABAAS game server client is in that core DLL (`WAL_APM3_GS_MODULE`), without it Aime play is
+  greyed. A new card agrees to the play terms (default "no": left then button 1). The core draws
+  its entry / Aime menus only through a host callback (frame context object `+0x1fe10`, size
+  `0x20270`) that eve.exe fills; `vf5fs\vfes.exe`, the core's own loader, leaves it null, so run
+  alone it shows the attract and the test menu but a black screen after START. Test mode = that
+  loader (`gametest.bat`: `pushd ...\vf5fs`, `vfes.exe`): `-wal-test`, run from `vf5fs\`
+  (`WAL_APM3_TEST_CWD`, the launcher's relaunch `exe=<file> cwd=<dir>`; from the game folder it
+  boots eve's content instead), our `apm.dll` installed there too. National / in-store / password
+  versus unavailable (no link server). The network icon: the core builds a status word for eve.exe
+  each frame (`0x180219180`: 1 ALL.Net, 2 Aime server, 4 the link object's alive flag, 8 its
+  connection); `WAL_APM3_NO_LINK_PATCHES` (`<module>!` patches of the core DLL) set the link bits:
+  green icon, no "versus unavailable" banner, a MATCHING SELECT screen whose versus modes stay
+  greyed ("play alone"). Found with `WAL_APM3_TRACE_CALLERS=1` (each new caller of a system
+  function logged, `module+offset`): the callers of `AllnetAuth_isGood` / `Aime_isDBAlive`.
 * **Guilty Gear Xrd REV 2 (APM3)** (`Binaries\Win32\GuiltyGearXrd.exe`, 32-bit Unreal Engine 3,
   Direct3D 9): the dump's `game.bat` arguments (`-FULLSCREEN -ResX=1920 -ResY=1080 -APM3 ...`);
   test mode = the same program with `-TESTMODE` (`gametest.bat`). Its ABAAS link client is built
@@ -5500,6 +5572,237 @@ whole stack under the real amdaemon; here the payload replaces the library inste
     menu, `SPA_EnemyStatus`: 0 DUMMY, standing still, 1 Lv.1, 2 Lv.2; the player's `+0x680`) is
     set to DUMMY when a room starts (`0x5f6b94`, every room): the profile makes it 1, a CPU. English: only 144
     of the 664 arcade texts are in `localizeAC/eng_idlist.txt`, Japanese stays.
+
+### 6.3l Sega ALLS with amdaemon (`crates/payload-alls`)
+
+System `alls`: the ALLS games that run beside the cabinet's own `amdaemon.exe` (keychip,
+ALL.Net, the "Type 4" USB I/O board, credits) instead of linking APM3 (§6.3k). First game:
+Mario & Sonic at the Tokyo 2020 Olympic Games Arcade (SDFV, 64-bit, portrait). segatools
+(public domain, `games/tokyohook` + `common/platform`, `common/board`) was the reference.
+
+- Launch: the profile's `background` list starts `amdaemon.exe -c <config files>` (game.bat's
+  list plus the profile's `config_wal.json`: video setup off, DHCP), `background_wait_ms`
+  later the game; both through `wal-loader64` with `wal_alls.dll` (`payload_loader: true`).
+  The game appends to amdaemon's payload log (`WAL_LOG_APPEND`).
+- amdaemon (`daemon.rs`): `HKLM\SYSTEM\SEGA\SystemProperty` values written at start
+  (`registry.rs`: keychip ids, region, subnet; mounts E: AMFS, Y: app data; `amVideo\name` =
+  the payload, which exports `amDllVideo*`); `\??\FddDriver` keychip ioctls (play counters,
+  trace log, billing CA/public key: segatools' dummy PKI in `pki.rs`); `\\.\sghwmonitor`,
+  `sghwreset`; the IO4 HID board (`io4.rs`: SetupDi/HidD hooks, overlapped 64-byte input reports
+  completed by a thread); `sysfile.rs` sets the DIP switches and free play in `E:\sysfile.dat`.
+- Network (`netenv.rs`): one adapter at .205 of the keychip's subnet, router/DNS at .1, pings
+  answered; DNS: `tenporouter.loc`, `bbrouter.loc` and the ALL.Net hosts resolve to the router,
+  `mobirouter.loc` / `dslrouter.loc` do not (else the DNS check waits over a minute; a
+  loopback address is refused as ALL.Net's). Connections to port 80 of the router go to the
+  payload's server (`allnet.rs`, 127.0.0.1:`WAL_PORT`+102: PowerOn / DownloadOrder, DFI = zlib +
+  base64, ARTEMiS formats). PowerOn is refused by default (offline); `WAL_ALLS_ALLNET=1`
+  accepts it (no title server: the game's ABAAS GS `/api/...` is not emulated yet).
+- Clock (`clock.rs`, both programs): Japan's time zone, clock setting refused quietly.
+- Keychip billing type 1 (`nearfull` high word; type 0 gives error 8113 "MODE"). Offline the
+  RTC is never synced with ALL.Net and billing stops the game with error 8114 "ALL.Net System
+  error (RTC)": the profile patches amRtc's sync test (`WAL_ALLS_DAEMON_PATCHES`
+  `0x28f100:B801000000C3`). Found with crash probes (`8B0C2500000000`) on the sites setting
+  error 0x1fb2 / 0x1fb1.
+- The game (`app.exe`): `-windowed` (its full screen draws the portrait picture for the real
+  screen's size, off center), a 1080x1920 desktop fitted on the screen with the dump's
+  `Bezel.png`; its window a borderless popup, not managed by the window manager (GNOME placed
+  it below its top bar: a black band on top, the picture cut at the bottom). Wine's X11 driver
+  read the `Managed` option before the payload set it (app.exe's DLLs start it before its entry
+  point): `wal-loader` now sets it for the game's executable before starting it
+  (`WAL_DESKTOP_UNMANAGED=1`); real keyboard/pads filtered; the LED board 837-15093-04 on COM1 (`led.rs`). The
+  power-on test screens are laid out for 1920 wide: clipped on the left in portrait (the
+  game's own layout).
+- Controls (tokyo board): b1/left blue, b2/up/start yellow, b3/right red, b4/b5 the left/right
+  foot (run: alternate), b6 jump (every jump beam, both feet off); test = test menu, service =
+  its cursor.
+- Debug: amdaemon's error numbers are in `am_resources/error.english.dll`; a landscape
+  `WAL_DESKTOP_SIZE: 1920x1080` layer shows the power-on test screens whole.
+- House of the Dead: Scarlet Dawn (SDET, UE 4.18, `WAL_ALLS_BOARD: hotd`): an older (2018)
+  amdaemon. Its dump has no ICF: `icf.rs` writes `E:\ICF1`/`ICF2` (system + game entries;
+  AES-128-CBC, key/IV built by amdaemon from three obfuscated tables at 0x140268d80; header
+  CRC-32 of the bytes after it, then the XOR of the entries' CRC-32s), else the game id stays
+  unset ("Game ID is invalid", "Disconnect dongle"). Platform `ACA1` (ACA0, model 0: the dongle
+  is refused). `config_wal.json` sets only the video off (this amdaemon requires
+  `network.property.save` with a network section).
+  - I/O board: per player start (bit 7), the gun's front (4) and side (1) buttons.
+  - Gun sensor board on COM1 (`gunsensor.rs`): one byte `08` per frame, answered with both
+    guns' 10-bit x/y (y from the bottom), triggers and off-screen flags, the complement of the
+    sum; `04` reset, `S P2\r\n` / `S Fn\r\n` settings answered `75 8A`. The LED controller
+    (COM22) is absent. The aim's update (0x1401ded89) is hooked: identity calibrations for
+    both guns (the factory's targets are inset from the edges) and the screen size: the menus'
+    canvas (1920 wide) or the 3D view's in game (DemulShooter's method).
+  - Graphics (`hotd.rs`, `unreal_ini.rs`): `[SystemSettings]` console variables in the game's
+    `Saved\Config\WindowsNoEditor\Engine.ini` (render scale, sharpening, shadows, AA, AO,
+    SSR, motion blur, DoF, bloom; `WAL_HOTD_EXCLUSIVE=1`: exclusive full screen at
+    `WAL_RESOLUTION`, Wine's FSR). Radeon 860M, 1920x1080 in game: 13 fps with every effect,
+    shadows off 26, everything off 43.
+  - Gore (`gore.rs`, `WAL_HOTD_GORE`, default on): Michel Denizob's gore restoration (MIT,
+    github.com/MichelDenizob/hotdsd_gorepatch) ported: the 5 edited assets (3 `bGoreFlag`
+    flips, `BP_EnemyNormal`'s burned body bound, visible, hidden at death) rebuilt at the
+    game's start from the untouched pak into `Content\Paks\Hodzero-WindowsNoEditor_Gore_P.pak`
+    (stored entries, the base pak's mount point; `_P`: read before the base pak), removed when
+    the option is off. The assets' SHA-1s match the original tool's; Unreal registers the pak
+    at the first gameplay load.
+  - `--headless` runs: the background amdaemon.exe is not inside gamescope (it opens the
+    desktop's display); a Wine call crossing the two displays (ClipCursor's grab, a display
+    mode change) ends the game with an X BadWindow error (one display outside headless runs).
+    The launcher now starts the `background` programs inside the game's headless gamescope
+    (a shell starts them, waits `background_wait_ms`, then runs the game).
+- Sega World Drivers Championship (SDDS, UE 4.17, `WAL_ALLS_BOARD: swdc`, amdaemon Nov 2018):
+  StartApp.bat's main cabinet (`config_LanServer.json`, `-launch=Cabinet`), no ICF in the dump
+  (`icf.rs`). segatools' `swdchook`/`board/ffb.c` (GPL-3, read for the protocols only) helped.
+  - amdaemon: `config_wal.json` sets the video off, the e-money terminal off and the Aime
+    firmware's path from the game's folder (amdaemon runs from `Binaries\Win64`, not
+    `App\Todoroki`: else error 6506 "firmware update failed"). The Aime reader (837-15396) on
+    COM3 (`aime.rs`, `WAL_ALLS_AIME_PORT`): namcoes3's `sgreader.rs` moved to payload-common;
+    player 1's `card` touches it for 3 s. Error 8114 (RTC): `amRtcIsServerSync` at 0x271a70
+    patched (`mov eax,1; ret`).
+  - I/O board: wheel adc 0, gas 1, brake 2; player 1 word: up 5, down 4, left 3, right 2,
+    start 7, view change 1; player 2 word: the wheel's blue 15, green 14, red 13, yellow 12,
+    paddles left 1 / right 0 (amdaemon's `config.json`).
+  - The game's boards: COM1 the force feedback board (`ffb.rs`: 4-byte `cmd p1 p2 xor&0x7f`
+    commands, never answered; `80` motor on/off, `84` constant force, `85` vibration, `86`
+    damper, sent as the launcher's FFB outputs), COM2 the 15093 LED board (`led.rs`), COM20
+    the dashboard (`dashboard.rs`, the `BP_DashBoard` Blueprint through Unreal's SerialPort
+    plugin, first of COM20-29: `pr\r\n` answered `ps` + ten `0` flags, else error 3003
+    "indicator LED board").
+  - Main cabinet: the game reads `Y:\SDDS\LanServer.dat` too (the payload creates it; else it
+    waits for a main cabinet). Its `MainDetector` broadcasts to 192.168.149.255:40257 and must
+    hear itself, else the game reports 8404 "LAN install server not found" (the
+    `BP_InitializeTestController` Blueprint's, not amdaemon's; a "reset in test mode" error
+    amdaemon keeps): `udp.rs` sends the subnet's datagrams to lo (broadcast 127.255.255.255),
+    received ones come from the adapter's address.
+  - Offline: the attract shows the offline banner; guest play (Aime prompt: START, then left +
+    START on "Yes"), team, round, race. Debug: amdaemon's ALL.Net library prints its log on
+    stderr with its level globals set (`WAL_ALLS_DAEMON_PATCHES` `0x8a2480:05000000,
+    0x8a2490:FFFFFFFF`).
+  - Online (default, `WAL_ALLS_ALLNET=1`): ALL.Net accepted, its `uri` the game server's bare
+    host name (`WAL_ALLS_TITLE_URI`: the game posts to `http://<uri>:80/api/...`); `aimedb.rs`
+    answers amdaemon's AimeDB (TCP 22345, AES-128-ECB `Copyright(C)SEGA`, ARTEMiS formats; the
+    Aime id 1000000000 + the access code's last 9 digits: a user id under 9 characters ends the
+    play); `gs.rs` runs the game's ABAAS game server in its process (payload-common
+    `abaas_gs.rs`, shared with apm3; title key from `BCryptGenerateSymmetricKey`; players in
+    `Y:\gs\gs-<aime id>.json`, saves merged: the game's two end-of-play saves). The title data
+    its servers held (`free_buckets`, `title_data` in `gs.rs`): JSON strings holding JSON,
+    numbers as strings, lists plain (the game turns `[` `]` into Unreal text lists), learnt from
+    the game's `UpdatePropertyFromJson` messages: `season_setting` (`NetSeasonSettingData`;
+    without it the power-on test crashes), `season_recommend_setting` (`update_time`: the time
+    sale period in minutes, a division by zero at the top menu without it), `event_setting1`
+    (event base) / `2` (event dates) / `5` (point rules), the penalty limits. Profile patches:
+    the main cabinet's LAN announcement every second instead of 30 s (0x43bebc), the matching
+    server's connection test reported good (0x303190: `tdrserver.exe` is not in the dumps).
+    Verified: power-on test all GOOD, card registration (name entry), a race, the save, the
+    returning player's licence.
+  - Automatic card (default, `WAL_ALLS_AUTO_CARD=1`, `aime.rs`): after START, sgreader puts the
+    card on the reader at amdaemon's polls until it is read (amdaemon polls only while the game
+    asks for a card), not again for 3 minutes; START on the attract goes straight to the
+    licence.
+  - English (`english.rs`, `WAL_SWDC_ENGLISH`, default on): the community "SWDC ENGLISH v2.1"
+    release folder copied into the game's folder (any name, found by its `manifest.json`):
+    applied at start like its installer (originals checked by SHA-256, moved to
+    `Content\WAL-English-backup`, the 26 files copied: `Todoroki-English_P.pak`, voice banks,
+    the movie), put back when off.
+- Mario & Sonic at the Rio 2016 Olympic Games (SDCH, Nu 1.1 `AAV1`, 64-bit D3D11, portrait;
+  amdaemon Dec 2015): a Nu game with amdaemon, profile in `systemprofiles/seganu/` with
+  `system: alls`. The Nu's amdaemon is the ALLS one (keychip driver, registry values, ICF,
+  ALL.Net) but reads the JVS I/O board through the AMEX board: `WAL_ALLS_JVS=1` starts
+  payload-common's `amex.rs` (Sonic Dash Extreme's AMEX devices, §6.3m: SetupDi classes, JVS,
+  DS, GPIO DIP switches, EEPROM / SRAM in `Y:\amex`) in amdaemon instead of `io4.rs`.
+  - `config_wal.json`: video off, DHCP; this amdaemon needs `"save"` beside `"dhcp"` (else
+    `No "save" key.` at start); LAN install off (cabinet 1's config makes it the store's
+    install server). Error 8114 (RTC):
+    `amRtcIsServerSync` at 0xed890 patched (the same function as SWDC's, found by its bytes).
+  - ALL.Net accepted (`WAL_ALLS_ALLNET`); the Aime reader on COM1 as the cabinet's 837-15286
+    (`WAL_AIME_READER=15286`: firmware 0x92, the dump's file; as a 837-15396 amdaemon tries a
+    firmware update, then never polls it), `WAL_ALLS_AUTO_CARD` (option, default on).
+  - GAME SERVER: Sega's CTS (`cts.rs`, `WAL_ALLS_CTS=1`): libcts 2.51 posts to
+    `/apms-api/<request>` on ALL.Net's host; bodies: a 16-byte header (the IV), then
+    MessagePack, zlib, AES-128-CBC with a fixed key (found by logging CryptImportKey). Answers
+    need the message's CRC-32 in the header (else result -201 and the request retried: the
+    ranking polled 20 times a second, StartGame "failed to get data"). StartGame returns the
+    card's player (name, 2 save slots of 1 KB; a new card: no name, blank slots: the game asks
+    for the name and resets the save); EndGame / ContinueGame / UpdateUser carry the name and
+    the changed slot, kept in `Y:\cts\`. Rankings answered empty (EndGame's results not used).
+    Found with a breakpoint probe on libcts' result conversion (0x49f090) and its own error
+    log (its level checks patched, stderr printed through a `vfprintf_s` hook).
+  - Open: CONNECT MAIN CABINET (the game's own check: cabinet 1 searched with UDP broadcasts on
+    port 20199; without a cabinet id: error 3002 "Cabinet ID 1 Not Found") waits about 30 s,
+    then BAD, the game then plays. The broadcasts are heard (`WAL_ALLS_UDP=1`, `udp.rs`); not
+    changed by the game's `Config.csv` (`BOOT_CHECK_NETWORK`) or `NetConfig.csv`
+    (`NET_USE_LAN`), nor by amdaemon's LAN install.
+  - Language: the region (`WAL_ALLS_REGION` option): 1 Japan (default), 4 export: English text,
+    but the export game has no Aime screens, no mode select, no game server (amdaemon's Aime
+    can be forced on, unused). The English texts (`TxtMessage/data_us`) over the Japanese ones
+    change little: the menus are images (`flash/data_jp`, `_us` variants only for the export
+    screens).
+  - The 15093 LED board on COM12 (`WAL_ALLS_LED_PORT`; else error 3001 "LED Board Not Found").
+  - Controls (the game's input test): one player, two levers, each read by 8 photo sensors
+    around it (`LLEV-PHO-1..8` clockwise from up: JVS right, left, up, down, buttons 1-4; the
+    right lever on player 2's switches), a button on each lever (start), a foot sensor on each
+    side (button 5) and six jump sensors (buttons 6-8 of both players). JVS layout `levers`
+    (`jvs_board.rs`): the left lever from player 1's directions, the right lever from player
+    2's directions or player 1's right stick. Run: the feet in turn (b3 / b4); start dash: both
+    levers up; jump (b5): all six jump sensors.
+
+### 6.3m Sega Nu (`crates/payload-seganu`)
+
+System `seganu`: Nu / Nu SX games linking Sega's amLib, whose "amy" layer talks to the AMEX
+board's drivers instead of RingEdge's `mx*` devices (segatools' `common/amex` and
+`common/platform`, public domain, were the reference; Project DIVA Arcade is its Nu example).
+First game: Sonic Dash Extreme (SDBX, Nu SX `AAW0`, 2015, 32-bit Direct3D 9, portrait). The
+payload is loaded by `wal-loader` (no driver DLL imported).
+
+- Devices (`devices.rs`, IAT hooks: `CreateFileA/W`, `DeviceIoControl`, `CloseHandle`,
+  `SetupDiGetClassDevsW` / `EnumDeviceInterfaces` / `GetDeviceInterfaceDetailW`): one device
+  per AMEX interface class, its path ours. DS (`279a9f67`: the 32-byte board record, CRC-32,
+  region, serial), EEPROM (`b7970f0c`, 8 KB) and SRAM (`741b5fca`, 512 KB) as files of the save
+  folder (`sv/EEPROM.bin`, `sv/SRAM.bin`, the game's own overlapped reads and writes; version
+  and `IOCTL_DISK_GET_DRIVE_GEOMETRY` answered), GPIO (`e9a26688`: DIP switches
+  `WAL_SEGANU_DIPSW`, push switches test / service, LEDs), JVS (`db6bbb45`: payload-common's
+  board on port `amex_jvs`, `CTL_CODE(0x8000, 0x802)` one packet each, `0x803` the sense line
+  3 / 2, the bus reset completed with `STATUS_NO_DATA_DETECTED`). `\??\FddDriver`: the keychip
+  (play counters, trace log, as alls' amdaemon). `\\.\sghwmonitor`: the CPU temperature.
+- `HKLM\SYSTEM\SEGA\SystemProperty` written at start: keychip (`WAL_SEGANU_GAME_ID`,
+  `WAL_SEGANU_PLATFORM_ID`, `WAL_SEGANU_REGION`, the machine's /24 as its network), `Static`
+  (platform id, CPU temperature limits), `Master`, `mount` (Y: application data).
+- Logs: `WAL_SEGANU_AMLOG` / `_LEVELS` (amLib's log function and module levels, as RingEdge's),
+  `WAL_SEGANU_GAMELOG` (the game's printf-like log: Sonic Dash Extreme `0x2e2b20`, its
+  managers' init only). Sonic Dash Extreme's amLib log: `0x1ddb60`, levels `0x76fa78,
+  0x76fd08,0x770120,0x782ef0,0x7830ec,0x783128,0x783134,0x783bac,0x783bb0,0x788ac4,0x788ac8,
+  0x78aac8,0x78af0c`.
+- Sonic Dash Extreme: runs from the dump root (`WAL_SEGANU_CWD=..`, `game.bat`), Y: a dump
+  folder. Its DirectInput blocked at boot on a synchronous read of Wine's virtual HID mouse:
+  `WAL_DINPUT_DISABLE`. JVS: 24 general purpose outputs (none: error 6402 "JVS I/O board does
+  not fulfill the game spec"); output 8 (byte 1, 0x01) is the ticket dispenser's motor, its
+  notch sensor player 1's btn4 (byte 2, 0x40), its empty sensor btn2 (byte 1, 0x01; found in
+  `TestMode_x86.exe`'s dispenser test: the switch words byte swapped per player, current at
+  +0x964, rising edges at +0x968): `WAL_TYPEX_JVS_TICKETS=8,btn4` (payload-common's board:
+  notch pulses at 10 tickets/s while the motor runs). Without pulses: TICKET JAM, kept in the
+  backup (the next boots resume the payout and stop on it) until the RELEASE button. COM2 is
+  the cabinet's lighting controller (a command per game state): absent. Display: its
+  1080x1920 windowed device in a 9:16 borderless window (`WAL_WINDOW_SIZE=aspect`) with a
+  1080x1920 back buffer (`WAL_D3D9_WINDOWED_SIZE`: sized from the window its 2D screens were
+  cut) and `WAL_D3D9_KEEP_WINDOW` (the window, not shown yet at the device's creation, stays
+  where it is instead of over the whole screen), in the dump's `bezel.png`
+  (`WAL_BEZEL_FIT=1`, a 3:4 opening).
+- Test menu: on TEST the game creates `C:\Users\AppUser\gametest` and exits (`game.bat` then
+  runs `TestMode_x86.exe` and deletes the file). The marker goes to the save folder and its
+  creation asks the launcher to relaunch with `exe=TestMode_x86.exe` (`WAL_SEGANU_TEST_EXE`);
+  in the test menu the payload removes it and asks for the game's relaunch, so EXIT starts the
+  game again (the cabinet's `game.bat` loop). The test menu accepts only a board with 4 analog
+  channels at least ("JVSNode[0] does not satisfies function", then NO JVS NODE in its input
+  test): `WAL_TYPEX_JVS_ANALOG_INPUTS=,,,` (declared, fixed). Its input test names the
+  switches: the DASH button is START, btn1 the ticket RELEASE button (profile: `b1` start,
+  `b2` release). Its amLib log: `0x2d760`, levels `0x770cc 0x770d0 0x77700 0x77708 0x8ad60
+  0x8ad70 0x8ad78` (through `WAL_EXE_ENV`: the level list takes spaces there).
+- Free play (`WAL_SEGANU_FREEPLAY`, else the common `WAL_FREEPLAY`; `seganu` is in the GUI's
+  free play systems): amLib's credit record (backup record 1: EEPROM 0x40, copy 0x840, 0x50
+  bytes, CRC-32 of the bytes after it) has the free play flag at +0x0A (the ALLS credit
+  block's place; +0x08 = 1 gives error 1000 "Wrong Coin Setting"), set at each start. A blank
+  backup makes the game copy the record from its default game data, used for that session:
+  `WAL_SEGANU_FREEPLAY_DEFAULT=0x5a51da` sets the flag there too (amLib's own default,
+  `0x5d2d10`, is not the one it uses). Verified: FREE PLAY from a blank backup, START alone
+  starts a game; off: coins and credits again.
 
 ### 6.4 Batocera integration
 
@@ -5872,7 +6175,10 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `shanghai-iv-ryuumon-hiyaku` | Shanghai IV Ryuumon Hiyaku | apm3 | user 100% (2026-11-06); headless: Aime cards (player saved), play, test mode | Sega ALLS APM3 (§6.3k): Unity 64-bit, `X:\lib\apm.dll` (`run_drives`) |
 | `rolling-gunner` | Rolling Gunner | apm3 | user 100% (2026-11-06), full screen (-f); headless: Aime cards, tutorial, test mode | Sega ALLS APM3 (§6.3k): 32-bit SDL2, `C:\SDGW\sound` (`c_folders`) |
 | `cotton-rock-n-roll` | Cotton Rock 'n' Roll | apm3 | user 100% (2026-11-07); headless: Aime cards, story, play, game over saved (ranking), test mode | Sega ALLS APM3 (§6.3k): 32-bit OpenGL, test program `gametest.exe` (.NET) |
+| `umihara-kawase-fresh` | Umihara Kawase Fresh! for AC | apm3 | user 100% (2026-11-08), jump on b1 (left Ctrl); headless: Aime cards (player loaded, rankings), Time Attack stage start, test mode | Sega ALLS APM3 (§6.3k): 32-bit OpenGL, game id SDGU, test program `gametest.exe` (.NET) |
+| `tapping-skill-test` | Tapping Skill Test | apm3 | user ok (2026-11-08): touch (mouse / gun), pinch = mouse wheel on the word (b2 / b3); headless: Aime cards (player loaded), minigames, test mode | Sega ALLS APM3 (§6.3k): 64-bit D3D11 touch game, I/O read as a winmm joystick (`WAL_APM3_JOYSTICK`), pinch = mouse wheel |
 | `virtua-fighter-3tb-online` | Virtua Fighter 3tb Online | apm3 | user 100% (2026-11-07), network icon green; headless: Aime cards (terms, user data, saved), team battle play, test mode and back | Sega ALLS APM3 (§6.3k): 64-bit Direct3D 11, Model 3 game in `pre3`, same-program test mode |
+| `virtua-fighter-esports` | Virtua Fighter eSports | apm3 | headless (2026-11-07): Aime cards (terms, new player saved), guest and Aime arcade play, test mode (`vf5fs\vfes.exe`) and back, network icon green; no network versus | Sega ALLS APM3 (§6.3k): Dragon Engine front end + VF5FS core DLL (ABAAS client), test program in `vf5fs\` |
 | `dengeki-bunko-fighting-climax-apm3` | Dengeki Bunko: Fighting Climax (APM3) | apm3 | user 100% (2026-11-06); headless: online, Aime cards, CPU fights | Sega ALLS APM3 (§6.3k): 32-bit Direct3D 9, network state patches, `Aime_getConfirm` AimeDB |
 | `guilty-gear-xrd-rev2-apm3` | Guilty Gear Xrd REV 2 (APM3) | apm3 | user 100% (2026-11-06): Aime cards, the player saved and reloaded, test menu, full screen | Sega ALLS APM3 (§6.3k): 32-bit Unreal Engine 3, Direct3D 9, built-in link client not started, title server by `gethostbyname` |
 | `guilty-gear-strive` | Guilty Gear -Strive- | apm3 | user 100% (2026-11-06): Aime cards, the player saved and reloaded, test menu, full screen; LOCAL plays alone against a still P2, no network versus | Sega ALLS APM3 (§6.3k): Unreal Engine 4, 64-bit, Direct3D 11, Arc System Works' own game server (`tl.rs`, WinINet) |
@@ -5902,6 +6208,8 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `super-monkey-ball-ticket-blitz` | Super Monkey Ball Ticket Blitz | ringedge | works (user: 100%) | RingWide (platform AAM) ticket game, trackball: `prjMonkey_tv_final.exe` (game.bat: `-noerror -fullscreen`, test menu `-t`); the executable's drive letter selects its mode (X: product: amLib, JVS, `SBVJ_Table.dat.product`; Z: development; else a PC build without I/O), patched to always X:; JVS with 20 outputs (it wants 16 at least: "JVSNode[0] does not satisfies function"); the trackball is DirectInput's system mouse (relative), the left stick / keyboard arrows added to it (`WAL_DINPUT_MOUSE_STICK`); its check for 2 mice in the raw input list (else error 1001) patched; the dump's exe is a 1920x1080 hack whose attract mode 2D stays at 1280x720 positions: the original 1280x720 restored (4 immediates), windowed in a screen-sized popup, 16:9; free play by default (amCreditInit returns -5, defaults) |
 | `lets-go-safari` | Let's Go Safari | ringedge | works (user: 100%) | RingWide (platform AAM) kids' driving game: `GameSampR_RingWide.exe` (test menu program `GameTestR_RingWide.exe`); JVS on COM4, the board 837-14895 in "FE MODE" (`WAL_TYPEX_JVS_IDENTIFIER`, 1 player x 22 switches, 20 outputs; else error 6402); amStorage on mxstorage 40114 (else a minute's wait, error 1001); region 04 (English; 08 Chinese; keychip and board), credit record; challenge file `SDAX_Table.dat` generated; course buttons 1-4 = JVS buttons 3-6 (pad A B X Y), wheel = HANDLE R / L (buttons 9 / 10), a rotary encoder pulsed while left / right are held (`WAL_TYPEX_JVS_PULSE`); no analog channel read |
 | `lady-luck` | Lady Luck | ringedge | works (user: 100%) | RingWide (platform AAM) medal slot machine satellite (game id SBXF), `App_Release.exe` alone (game.bat's `mbcom.exe`, the network medal bank, and `AimeReader.exe` not needed); 1280x1024 (DIP DF), region 01, credit record, challenge file `Data/amFile/SBXF_Table.dat`; its boards from `Data/script/game_conf.lua` (`IOBoardComPort` 3, `TouchPanelComPort` 1, `CPBoardComPort` 5; 0 = unused, debug): the I/O board on COM3 is Medal no Gunman's protocol with its own switches (`WAL_RINGEDGE_MEDAL_IO`, `satellite.rs`: selector panel / main door closed, reset key = service, transfer; medals counted by `66 0C`, coin = 10 medals), the control panel board on COM5 (`WAL_RINGEDGE_CP_BOARD`: buttons select 1-5, start, payout through command `81`), a 3M MicroTouch EX II on COM1 (`WAL_RINGEDGE_MICROTOUCH`, `microtouch.rs`: the mouse, its left button = b8; format tablet reports streamed through the serial layer's idle callback, Y up; the game's default calibration fits). A fresh backup shows error 3001 until the reset key (service) is turned. The game saves the I/O board's last command list in backup RAM and restores it at boot, then reads the `74` handshake reply against it (its checksum as a report: error 3105 at every boot once a payout saved the list): patched to restore it empty (`WAL_PATCHES` 0x2deac). Payout (b6) pays the medals out |
+| `sonic-dash-extreme` | Sonic Dash Extreme | seganu | headless tests (2026-11-08): attract, coins, start, character select, play, tickets dispensed during play and at the end, back to attract, test menu and back; not user-verified | Sega Nu SX (§6.3m): AMEX board devices, keychip driver, registry values, JVS with 24 outputs and the ticket dispenser (`WAL_TYPEX_JVS_TICKETS`), portrait window in the dump's bezel |
+| `mario-and-sonic-at-rio-2016-olympic-games` | Mario & Sonic at the Rio 2016 Olympic Games | alls | headless tests (2026-11-08): power-on test, attract, coins, mode / character / event select, 100m race to the result, test menu input test; user (2026-11-08): Aime name registration, two card sessions, the save kept | Nu 1.1 with amdaemon (§6.3l): AMEX board JVS in amdaemon (`WAL_ALLS_JVS`), LED board on COM12, levers layout, amRtc sync patch, Aime (837-15286) and the CTS game server (player names and saves kept) |
 | `teratoma` | Teratoma: The Last Rebellion | ringedge | works (user: 100%) | Skonec 2014 lightgun game on the Operation G.H.O.S.T. engine (amLib, gs2.ini, game id `SBWA`, RingWide platform AAM). `TT.exe` is packed: `wal-loader` (`WAL_LOADER_TERATOMA`, `crates/loader/src/teratoma.rs`, SHA-256 checked) runs the unpacker past its checks and loads the payload from the game's startup call. Its code calls the system through the packer's stubs: `WAL_PACKED_IMPORTS=kernel32.dll,setupapi.dll,d3d9.dll` hot patches kernelbase's functions (setupapi's and d3d9's: the unpacked import table's pointers). Its 1280x720 fullscreen device (no such mode on a 1600x1200 Xorg screen) made a 1280x720 back buffer in a borderless screen-sized window, stretched (`WAL_D3D9_WINDOWED_SIZE`, `WAL_WINDOW_POPUP`, `WAL_WINDOW_SIZE`). The dump's `root/lua/Sound/Sound.lua` wraps the game's (music and gun shot at 0.25, dialogue doubled): the game's own script, extracted from it, put back (`files`). The dump's gs2.ini (PC mouse mode) replaced by a profile file with `EnableAMLib`, `EnableJvs`, `GunController` on: amLib's JVS on `mxjvs`, the game's own JVS reader (guns, buttons, coins) on the first COM port Windows lists (`COM*`), an overlapped reader (`WaitCommEvent`, reads armed after each reply: `WAL_SERIAL_PENDING_READS`, replies 2 ms after the write's completion, else polled 5 times a second). Test menu: F2 sets `root/TestMode.sac` and asks amMaster for the next application, it stays: the payload ends it after 2 s, the launcher starts it again. The protector's watchdog threads end the game about a minute into a level (`TerminateProcess` from +0x28162a6, not every run): ignored (`WAL_IGNORE_TERMINATE_FROM`). `logo.avi` and the promo movie are WMV2 re-encodes in the dump; the in-game movies WMV3 |
 | `chaos-code-ringwide` | Chaos Code (RingWide) | ringedge | works (user: 100%) | RingWide boards in the RingEdge payload |
 | `ko-drive` | K.O. Drive | ringedge | works (user: 100%) | RingWide |

@@ -2,6 +2,7 @@
 //! matching `payload-<system>` crate; both only share the common protocol.
 
 mod adrenaline;
+mod alls;
 mod apm3;
 mod arcadepc;
 mod europar;
@@ -11,6 +12,7 @@ mod namcoes3;
 mod nesica;
 mod rawthrills;
 mod ringedge;
+mod seganu;
 mod segashell;
 mod tsunami;
 mod typex;
@@ -72,14 +74,16 @@ pub fn by_name(name: &str) -> Result<Box<dyn System>> {
         "tsunami" => Box::new(tsunami::Tsunami),
         "rawthrills" => Box::new(rawthrills::RawThrills),
         "ringedge" => Box::new(ringedge::RingEdge),
+        "seganu" => Box::new(seganu::SegaNu),
         "segashell" => Box::new(segashell::SegaShell),
         "wahlap" => Box::new(wahlap::Wahlap),
         "konami" => Box::new(konami::Konami),
         "arcadepc" => Box::new(arcadepc::ArcadePc),
         "unis" => Box::new(unis::Unis),
         "adrenaline" => Box::new(adrenaline::Adrenaline),
-        "apm3" | "segalls" | "alls" => Box::new(apm3::Apm3),
+        "apm3" | "segalls" => Box::new(apm3::Apm3),
+        "alls" => Box::new(alls::Alls),
         "europar" | "europa-r" | "segaeuropar" | "segaeuropa-r" => Box::new(europar::EuropaR),
-        _ => bail!("unknown system '{name}' (supported: nesica, nesica2, typex, globalvr, namcoes3, tsunami, rawthrills, ringedge, segashell, wahlap, konami, europar, arcadepc, unis, adrenaline, apm3)"),
+        _ => bail!("unknown system '{name}' (supported: nesica, nesica2, typex, globalvr, namcoes3, tsunami, rawthrills, ringedge, seganu, segashell, wahlap, konami, europar, arcadepc, unis, adrenaline, apm3, alls)"),
     })
 }

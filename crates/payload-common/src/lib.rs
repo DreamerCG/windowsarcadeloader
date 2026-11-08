@@ -4,6 +4,14 @@
 //! virtual arcade sticks with [`input`] from the game threads (lock free) and
 //! reports game outputs with [`send_output`].
 
+// the ABAAS game server (player data, rankings) of Sega's APM3 and ALLS games
+pub mod abaas_gs;
+// Sega Nu's AMEX board (JVS, DS, EEPROM, SRAM, GPIO) found by its device interface classes
+#[cfg(windows)]
+pub mod amex;
+// AVPro Video's uGUI display played by Unity's VideoPlayer (Android builds without AVPro's backend)
+#[cfg(windows)]
+pub mod avpro;
 #[cfg(windows)]
 pub mod codepage;
 #[cfg(windows)]
@@ -14,6 +22,12 @@ pub mod memdiff;
 pub mod crypto;
 #[cfg(windows)]
 pub mod bezel;
+#[cfg(windows)]
+pub(crate) mod border;
+#[cfg(windows)]
+mod border_d3d11;
+#[cfg(windows)]
+mod border_d3d8;
 #[cfg(windows)]
 pub mod crosshair;
 #[cfg(windows)]
@@ -77,17 +91,18 @@ pub mod images_d3d11;
 // a touch screen's pointer over Direct3D 11 pictures
 #[cfg(windows)]
 pub mod pointer_d3d11;
-// a portrait Unity cabinet game on a 16:9 screen (WAL_UNITY_LANDSCAPE)
-#[cfg(windows)]
-pub mod unity_landscape;
 // parallel port force feedback boards (inpout32 Out32)
 pub mod port_ffb;
 #[cfg(windows)]
 pub mod serial;
+// Sega's Aime NFC card reader on a serial port
+#[cfg(windows)]
+pub mod sgreader;
 #[cfg(windows)]
 pub mod screenshot;
 #[cfg(windows)]
 pub mod sdl;
+pub mod unreal_ini;
 #[cfg(windows)]
 pub mod vfw;
 #[cfg(windows)]
@@ -160,6 +175,7 @@ pub fn start(name: &'static str) {
             #[cfg(target_arch = "x86")]
             crash::trace_exit();
             dshow::init();
+            if border::config().is_some() { border_d3d11::init(); }
             screenshot::init();
             window::init();
             workarea::init();

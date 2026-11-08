@@ -21,7 +21,9 @@
 //! down otherwise) may never get the focus: Unity minimized its full screen window (Shooty
 //! Skies, Flappy Tickets); shown, a window is told it is active and has the focus (Unity
 //! ignored the keys posted to it otherwise). The game's input is the launcher's, not the
-//! window's focus.
+//! window's focus. Without `WAL_DESKTOP_SIZE` it applies alone: the process's windows are
+//! subclassed as they appear (Tomb Raider on Batocera's Wayland: the focus lost on a reload,
+//! Unity paused its full screen window).
 //!
 //! `WAL_DESKTOP_CLIENT=1`: the top-level windows' client areas answer in desktop units too
 //! (`GetClientRect`: the fitted window's client size unscaled, `GetWindowRect`, `ClientToScreen`:
@@ -95,6 +97,9 @@ fn fit() -> (f64, f64, f64) {
 /// A window of the game's desktop on the real screen: its size scaled, centered (one game
 /// window; the positions callers pass back may come from `GetWindowRect`, real ones).
 fn to_screen(x: i32, y: i32, w: i32, h: i32) -> (i32, i32, i32, i32) {
+    // With the native border the presentation surface covers the monitor. The compositor
+    // fits the desktop's portrait/landscape picture into it; logical desktop units stay intact.
+    if crate::border::config().is_some() { let (sw,sh)=screen(); return (0,0,sw,sh); }
     let (s, _, _) = fit();
     let (sw, sh) = screen();
     let (nw, nh) = ((w as f64 * s).round() as i32, (h as f64 * s).round() as i32);
@@ -176,7 +181,14 @@ unsafe extern "system" fn move_window(hwnd: P, x: i32, y: i32, cx: i32, cy: i32,
 unsafe extern "system" fn client_to_screen(hwnd: P, point: *mut windows_sys::Win32::Foundation::POINT) -> i32 {
     let orig: unsafe extern "system" fn(P, *mut windows_sys::Win32::Foundation::POINT) -> i32 =
         unsafe { std::mem::transmute(ORIG_CLIENT_TO_SCREEN.load(Ordering::Relaxed)) };
+    let logical = if crate::border::config().is_some() && is_top_level(hwnd) && !point.is_null() {
+        Some(unsafe { ((*point).x,(*point).y) })
+    } else { None };
     let ok = unsafe { orig(hwnd, point) };
+    if ok != 0 && let Some((x,y))=logical {
+        unsafe { (*point).x=x;(*point).y=y; }
+        return ok;
+    }
     if ok != 0 && !point.is_null() {
         let p = unsafe { &mut *point };
         let (x, y) = from_screen(p.x as f64, p.y as f64);
@@ -190,6 +202,10 @@ unsafe extern "system" fn client_rect(hwnd: P, rect: *mut RECT) -> i32 {
     let orig: unsafe extern "system" fn(P, *mut RECT) -> i32 = unsafe { std::mem::transmute(ORIG_CLIENT_RECT.load(Ordering::Relaxed)) };
     let ok = unsafe { orig(hwnd, rect) };
     if ok != 0 && !rect.is_null() && is_top_level(hwnd) {
+        if crate::border::config().is_some() && let Some((w,h))=size() {
+            unsafe { *rect=RECT { left:0,top:0,right:w,bottom:h }; }
+            return ok;
+        }
         let (s, _, _) = fit();
         let r = unsafe { &mut *rect };
         r.right = r.left + (f64::from(r.right - r.left) / s).round() as i32;
@@ -203,6 +219,10 @@ unsafe extern "system" fn window_rect(hwnd: P, rect: *mut RECT) -> i32 {
     let orig: unsafe extern "system" fn(P, *mut RECT) -> i32 = unsafe { std::mem::transmute(ORIG_WINDOW_RECT.load(Ordering::Relaxed)) };
     let ok = unsafe { orig(hwnd, rect) };
     if ok != 0 && !rect.is_null() && is_top_level(hwnd) {
+        if crate::border::config().is_some() && let Some((w,h))=size() {
+            unsafe { *rect=RECT { left:0,top:0,right:w,bottom:h }; }
+            return ok;
+        }
         let r = unsafe { &mut *rect };
         let (left, top) = from_screen(r.left as f64, r.top as f64);
         let (right, bottom) = from_screen(r.right as f64, r.bottom as f64);
@@ -346,6 +366,22 @@ unsafe extern "system" fn window_proc(hwnd: P, msg: u32, wparam: usize, lparam: 
         }
     }
     r
+}
+
+/// `WAL_DESKTOP_ACTIVE` without a desktop size: the windows of this process subclassed as they
+/// appear (no window creation hooks then), for the deactivation `window_proc` hides.
+fn active_only() {
+    if !std::env::var("WAL_DESKTOP_ACTIVE").is_ok_and(|v| v.trim() == "1") {
+        return;
+    }
+    ACTIVE.store(true, Ordering::Relaxed);
+    std::thread::spawn(|| {
+        loop {
+            subclass_existing();
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    });
+    log!("desktop: the windows never see their deactivation");
 }
 
 /// The top-level windows of this process already created: subclassed.
@@ -553,6 +589,7 @@ pub fn init() {
         let (w, h) = v.trim().split_once('x')?;
         Some((w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?))
     }) else {
+        active_only();
         return;
     };
     if w <= 0 || h <= 0 {
@@ -569,7 +606,10 @@ pub fn init() {
             modules.push(base);
         }
     }
-    let client = std::env::var("WAL_DESKTOP_CLIENT").is_ok_and(|v| v.trim() == "1");
+    // with the native border the window covers the screen: its rectangles always answer in
+    // desktop units (Elevator Action Invasion's Unreal Engine laid out its portrait picture in
+    // the real, screen-wide window otherwise: the left part of a 1920x1080 swap chain)
+    let client = crate::border::config().is_some() || std::env::var("WAL_DESKTOP_CLIENT").is_ok_and(|v| v.trim() == "1");
     ACTIVE.store(std::env::var("WAL_DESKTOP_ACTIVE").is_ok_and(|v| v.trim() == "1"), Ordering::Relaxed);
     let hooks: [(&str, usize, &AtomicUsize); 20] = [
         ("GetWindowRect", if client { window_rect as *const () as usize } else { 0 }, &ORIG_WINDOW_RECT),

@@ -21,7 +21,7 @@ pub const VOLUME_ENV: &str = "WAL_VOLUME";
 /// The common free play option (`1`/`0`, default `1`: `defaults.yaml`), for the systems whose
 /// payload can set free play ([`FREEPLAY_SYSTEMS`]).
 pub const FREEPLAY_ENV: &str = "WAL_FREEPLAY";
-pub const FREEPLAY_SYSTEMS: &[&str] = &["apm3", "konami", "segashell", "europar", "unis", "namcoes3"];
+pub const FREEPLAY_SYSTEMS: &[&str] = &["apm3", "konami", "segashell", "europar", "unis", "namcoes3", "seganu"];
 const DEFAULTS: &str = include_str!("defaults.yaml");
 
 /// Graphics stack for old DirectDraw/D3D games.
@@ -41,6 +41,9 @@ pub struct Profile {
     pub args: Vec<String>,
     /// Windows executables to run from the game directory before the game starts.
     pub pre_launch: Vec<String>,
+    /// Programs started before the game and left running beside it (`<exe> [args]`).
+    pub background: Vec<String>,
+    pub background_wait_ms: u64,
     pub runner: String,
     pub runners_dir: PathBuf,
     pub prefix: PathBuf,
@@ -393,6 +396,17 @@ impl Profile {
                 max: Some(100),
                 ..option(VOLUME_ENV, "Volume", "The game's sound level in percent (all its sounds, music and videos).")
             });
+        }
+        if self.input.guns_enabled {
+            for (key, label, kind, choices, description) in [
+                ("WAL_SINDEN_BORDER", "Sinden border", OptionKind::Choice, vec!["auto", "1", "0"], "Auto: enabled when a Sinden is plugged in. 1: always on. 0: off."),
+                ("WAL_SINDEN_BORDER_SIZE", "Border size", OptionKind::Text, vec![], "thin, medium, big, or thickness in percent of screen width (0.1 to 10)."),
+                ("WAL_SINDEN_BORDER_COLOR", "Border color", OptionKind::Text, vec![], "white, red, green, blue, or #RRGGBB."),
+            ] {
+                if !declared(key) {
+                    common.push(GameOption { kind, choices: choices.into_iter().map(str::to_string).collect(), ..option(key, label, description) });
+                }
+            }
         }
         if !common.is_empty() {
             self.options.insert(0, OptionGroup { title: Some("Common".into()), options: common });
