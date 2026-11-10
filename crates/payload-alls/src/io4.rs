@@ -19,6 +19,13 @@
 //!   `config.json`: 8 bits); player 1's up/down/left/right/start, b1 the view change; player 2's
 //!   word the wheel's buttons: b2 blue, b3 green, b4 red, b5 yellow, b6 / b7 the paddles
 //!   (left / right).
+//! - `idac` (Initial D THE ARCADE): the wheel, gas and brake as `swdc`, player 1's
+//!   up/down/left/right/start and b1 the view change as `swdc`; player 2's word the 6-speed H
+//!   shifter's gate (up 5, down 4, left 3, right 2: 1st up + left, 2nd down + left, 3rd up, 4th
+//!   down, 5th up + right, 6th down + right), its gear moved by b7 (up) / b6 (down), neutral 0,
+//!   or held on kp1-kp6 (an H shifter's positions).
+//! - `chusan` (CHUNITHM SUPERSTAR): the six air sensors (`chuni::hand`); the slider is the
+//!   game's (COM1).
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -62,6 +69,8 @@ enum Board {
     Tokyo,
     Hotd,
     Swdc,
+    Idac,
+    Chusan,
 }
 
 fn board() -> Board {
@@ -69,8 +78,19 @@ fn board() -> Board {
     *BOARD.get_or_init(|| match std::env::var("WAL_ALLS_BOARD").unwrap_or_default().trim() {
         "hotd" => Board::Hotd,
         "swdc" => Board::Swdc,
+        "idac" => Board::Idac,
+        "chusan" => Board::Chusan,
         _ => Board::Tokyo,
     })
+}
+
+/// Player 1 starting a game: Initial D THE ARCADE's gas pedal too (pressed past half: the game
+/// starts on it as on start), Chrono Regalia's touch (`b1`: its attract waits for a touch, its
+/// cabinet has no start button), for the automatic Aime card.
+pub(crate) fn start_pressed(p1: &wal_protocol::StickState) -> bool {
+    static HKB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let hkb = *HKB.get_or_init(|| std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "hkb"));
+    p1.pressed(b::START) || (board() == Board::Idac && p1.axis_u16(Axis::Accel) >= 0x8000) || (hkb && p1.pressed(b::B1))
 }
 
 /// The switches of players 1 and 2 from the virtual sticks.
@@ -94,6 +114,27 @@ fn switches() -> [u16; 2] {
                 sw[1] |= 1 << bit;
             }
         }
+        return sw;
+    }
+    if board() == Board::Chusan {
+        // CHUNITHM SUPERSTAR's air sensors (amdaemon's photo_sensor_1..6: players 1 and 2's
+        // bits 13, 12, 11), on while their beam is clear, from the lowest (segatools'
+        // chusanhook): beam 0 player 1's bit 13, beam 1 player 2's bit 13...
+        let hand = crate::chuni::hand();
+        for (i, bit) in [13, 13, 12, 12, 11, 11].into_iter().enumerate() {
+            if hand as usize <= i {
+                sw[i % 2] |= 1 << bit;
+            }
+        }
+        return sw;
+    }
+    if board() == Board::Idac {
+        for (button, bit) in [(b::UP, 5), (b::DOWN, 4), (b::LEFT, 3), (b::RIGHT, 2), (b::START, 7), (b::B1, 1)] {
+            if p1 & button != 0 {
+                sw[0] |= 1 << bit;
+            }
+        }
+        sw[1] = wal_payload_common::hshifter::gate(wal_payload_common::hshifter::gear(p1)) as u16;
         return sw;
     }
     if board() == Board::Hotd {
@@ -153,7 +194,7 @@ fn report() -> [u8; 64] {
     }
     let coins = (COINS.load(Ordering::Relaxed) as u16) << 8;
     r[25..27].copy_from_slice(&coins.to_le_bytes());
-    if board() == Board::Swdc {
+    if matches!(board(), Board::Swdc | Board::Idac) {
         // adc 0-2 (offset 1): the wheel (center 0x8000), gas, brake
         let p1 = input(0);
         let adc = [p1.axis_u16(Axis::LeftX), p1.axis_u16(Axis::Accel), p1.axis_u16(Axis::Brake)];

@@ -6,17 +6,23 @@
 //!   `WAL_SEGANU_SAVE` (default `sv`).
 //! * The JVS I/O board (Sega 837-14572, payload-common's `jvs_board.rs`) on the AMEX JVS
 //!   device.
-//! * amLib's own log (`WAL_SEGANU_AMLOG`, `amlog.rs`).
+//! * amLib's own log (`WAL_SEGANU_AMLOG`, payload-common's `amlog`).
 //! * The test menu program (`TestMode_x86.exe`): started by a relaunch when the game hands over
 //!   to it (`devices.rs`); it asks for the game's relaunch, so leaving it starts the game again
 //!   (`game.bat`'s loop on the cabinet).
 //! * Profile code patches (`WAL_PATCHES`); `WAL_SEGANU_CWD`: the game's working directory,
 //!   relative to its own.
+//! * 64-bit: a packed executable started once unpacked (`WAL_SEGANU_UNPACK`, `unpack.rs`:
+//!   Luigi's Mansion Arcade's Capcom protector).
+//! * Luigi's Mansion Arcade's I/O board on COM1 (`WAL_SEGANU_LMAIO`, `lmaio.rs`): guns, coins,
+//!   switches.
 
 #![allow(non_snake_case)]
 
-mod amlog;
 mod devices;
+mod lmaio;
+#[cfg(target_arch = "x86_64")]
+mod unpack;
 
 use std::ffi::c_void;
 
@@ -34,10 +40,13 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
             let ok = std::env::set_current_dir(dir.trim()).is_ok();
             log!("seganu: working directory {} ({:?})", dir.trim(), if ok { std::env::current_dir().ok() } else { None });
         }
+        #[cfg(target_arch = "x86_64")]
+        unpack::init();
         patches::apply();
-        amlog::init();
+        wal_payload_common::amlog::init("SEGANU");
         wal_payload_common::jvs_board::init(devices::JVS_PORT);
         devices::init();
+        lmaio::init();
         test_menu();
         log!("seganu: initialized");
     }

@@ -11,6 +11,10 @@
 //!   payload has no title server, and the keychip's billing then stops the game with error
 //!   8114, "ALL.Net System error (RTC)")
 //! - `DownloadOrder`: no update (`uri=null`)
+//!
+//! A title server in this process ([`set_title`]: CHUNITHM's, a game with no amdaemon): the
+//! requests outside `/sys/servlet/` are its, the game reaching the title uri's host (the router,
+//! `{router}` in `WAL_ALLS_TITLE_URI`) through WinHTTP too.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -65,7 +69,7 @@ fn value<'a>(form: &'a [(String, String)], key: &str) -> &'a str {
 
 /// UTC now as (year, month, day, hour, minute, second).
 fn utc_now() -> (i64, u32, u32, u32, u32, u32) {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let secs = crate::clock::unix_now() as i64;
     let (days, rest) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     // days to civil date (Howard Hinnant's algorithm)
     let z = days + 719_468;
@@ -85,7 +89,7 @@ fn utc_now() -> (i64, u32, u32, u32, u32, u32) {
 fn http_date() -> String {
     let (y, mo, d, h, mi, s) = utc_now();
     // day of the week: Zeller-like, from the days since 1970-01-01 (a Thursday)
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs());
+    let secs = crate::clock::unix_now();
     let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][(secs / 86400 % 7) as usize];
     let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][mo as usize - 1];
     format!("{weekday}, {d:02} {month} {y} {h:02}:{mi:02}:{s:02} GMT")
@@ -95,9 +99,16 @@ fn power_on(req: &[(String, String)]) -> String {
     let format = value(req, "format_ver");
     let r = crate::netenv::router();
     let host = format!("{}.{}.{}.{}", r[0], r[1], r[2], r[3]);
-    // the title server's URI (`WAL_ALLS_TITLE_URI`: an ABAAS game's GS server name, a bare host)
-    let uri = std::env::var("WAL_ALLS_TITLE_URI").ok().filter(|u| !u.trim().is_empty()).unwrap_or_else(|| format!("http://{host}/{}/", value(req, "game_id")));
-    let mut resp = format!("stat=1&uri={}&host={host}&place_id=0123", uri.trim());
+    // the title server's URI (`WAL_ALLS_TITLE_URI`: an ABAAS game's GS server name, a bare host;
+    // `{gs}` the payload's game server itself, 127.0.0.1:`WAL_PORT`+104: Chrono Regalia's Mono
+    // sockets, not in the game module's imports, never reach the router's redirection)
+    let gs = format!("127.0.0.1:{}", crate::gs::port());
+    let uri = std::env::var("WAL_ALLS_TITLE_URI").ok().filter(|u| !u.trim().is_empty()).map(|u| u.replace("{router}", &host).replace("{gs}", &gs)).unwrap_or_else(|| format!("http://{host}/{}/", value(req, "game_id")));
+    // the title server's host (`WAL_ALLS_TITLE_HOST`: Initial D THE ARCADE's game server URL,
+    // `<host>initiald/...`, https:// when it has no scheme; Initial D ARCADE STAGE Zero's
+    // `{router}:10000`, its game server's address)
+    let title_host = std::env::var("WAL_ALLS_TITLE_HOST").map_or(host.clone(), |h| h.trim().replace("{router}", &host));
+    let mut resp = format!("stat=1&uri={}&host={title_host}&place_id=0123", uri.trim());
     resp += "&name=WindowsArcadeLoader&nickname=WAL&region0=1&region_name0=W&region_name1=X&region_name2=Y&region_name3=Z&setting=1";
     let (y, mo, d, h, mi, s) = utc_now();
     if format.starts_with('3') {
@@ -146,6 +157,13 @@ fn handle(stream: &mut TcpStream) -> std::io::Result<()> {
         data.extend_from_slice(&buf[..n]);
     }
     let body = &data[header_end..(header_end + length).min(data.len())];
+    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+    if let Some(title) = TITLE.get().filter(|_| !path.contains("/sys/servlet/")) {
+        let body = title(&path, body);
+        let mut r = format!("HTTP/1.1 200 OK\r\nDate: {}\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", http_date(), body.len()).into_bytes();
+        r.extend_from_slice(&body);
+        return stream.write_all(&r);
+    }
     let dfi = header("Pragma").is_some_and(|v| v.eq_ignore_ascii_case("DFI"));
     let text = if dfi {
         let packed = base64_decode(body);
@@ -153,7 +171,6 @@ fn handle(stream: &mut TcpStream) -> std::io::Result<()> {
     } else {
         String::from_utf8_lossy(body).into_owned()
     };
-    let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
     let req = form(&text);
     log!("allnet: {path} {}", text.trim());
     let online = std::env::var("WAL_ALLS_ALLNET").is_ok_and(|v| v.trim() == "1");
@@ -199,12 +216,34 @@ fn serve() {
     }
 }
 
+/// The billing server runs in this process (`billing.rs`).
+static BILLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The billing server in this process (a game without amdaemon checks in itself).
+pub(crate) fn serve_billing() {
+    BILLING.store(true, Ordering::Relaxed);
+    crate::billing::init();
+}
+
+/// The title server in this process: (request path, body) -> answer body.
+pub(crate) type Title = fn(&str, &[u8]) -> Vec<u8>;
+
+static TITLE: std::sync::OnceLock<Title> = std::sync::OnceLock::new();
+
+/// The title server answering in ALL.Net's server (a game without amdaemon: CHUNITHM).
+pub(crate) fn set_title(title: Title) {
+    let _ = TITLE.set(title);
+}
+
 static CONNECT: AtomicUsize = AtomicUsize::new(0);
 
-/// ALL.Net's hosts (and the addresses the payload's DNS gives them).
+/// ALL.Net's hosts (and the addresses the payload's DNS gives them; the router, the title
+/// server's host, with a title server here).
 fn is_allnet(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
-    host.ends_with("naominet.jp") || host.ends_with("sys-all.net") || host == "127.0.0.1" || host == "localhost"
+    let r = crate::netenv::router();
+    let router = (TITLE.get().is_some() || TITLE_IN_DAEMON.load(Ordering::Relaxed)) && host == format!("{}.{}.{}.{}", r[0], r[1], r[2], r[3]);
+    host.ends_with("naominet.jp") || host.ends_with("sys-all.net") || host == "127.0.0.1" || host == "localhost" || router
 }
 
 unsafe extern "system" fn win_http_connect(session: usize, server: *const u16, port_: u16, reserved: u32) -> usize {
@@ -234,6 +273,14 @@ fn moved(address: *const u8, length: i32) -> Option<[u8; 16]> {
         return None;
     }
     let a = unsafe { std::slice::from_raw_parts(address, 16) };
+    // the cabinet's own address (absent from the machine): the loopback address, same port
+    // (Initial D ARCADE STAGE Zero's store server, `ServerBoxD8_Nu_x64` beside the game)
+    if a[0] == 2 && a[4..8] == crate::netenv::iface() {
+        let mut m = [0u8; 16];
+        m.copy_from_slice(a);
+        m[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        return Some(m);
+    }
     if a[0] != 2 || a[4..8] != crate::netenv::router() {
         return None;
     }
@@ -243,6 +290,10 @@ fn moved(address: *const u8, length: i32) -> Option<[u8; 16]> {
         80 if IN_GAME.load(Ordering::Relaxed) => crate::gs::port(),
         80 => port(),
         22345 => crate::aimedb::port(),
+        // Initial D ARCADE STAGE Zero's game server (`idz.rs`)
+        10000 if IN_GAME.load(Ordering::Relaxed) => crate::idz::port(),
+        // the billing server (a game checking in itself: CHUNITHM)
+        8443 if BILLING.load(Ordering::Relaxed) => crate::billing::port(),
         other => {
             log!("allnet: connection to the router's port {other}");
             return None;
@@ -272,17 +323,42 @@ unsafe extern "system" fn wsa_connect(socket: usize, address: *const u8, length:
     }
 }
 
+/// ws2_32's `connect`, imported by ordinal (4) or by name (Initial D THE ARCADE's amdaemon and
+/// game).
+unsafe fn hook_socket_connect() {
+    let orig = unsafe { iat::hook_ordinal(iat::game_module(), "WS2_32.dll", 4, socket_connect as *const () as usize) }
+        .or_else(|| unsafe { iat::hook("ws2_32.dll", "connect", socket_connect as *const () as usize) });
+    if let Some(orig) = orig {
+        SOCKET_CONNECT.store(orig, Ordering::Relaxed);
+    }
+}
+
 /// The game's process: its connections to the router's port 80 go to its game server (`gs.rs`).
 static IN_GAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The title server is in amdaemon's ALL.Net server (CHUNITHM SUPERSTAR): the game's
+/// connections to the router's port 80, its WinHTTP ones to the router too, go there.
+static TITLE_IN_DAEMON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn init_title_redirect() {
+    TITLE_IN_DAEMON.store(true, Ordering::Relaxed);
+    unsafe {
+        hook_socket_connect();
+        if let Some(orig) = iat::hook("ws2_32.dll", "WSAConnect", wsa_connect as *const () as usize) {
+            WSA_CONNECT.store(orig, Ordering::Relaxed);
+        }
+        if let Some(orig) = iat::hook("winhttp.dll", "WinHttpConnect", win_http_connect as *const () as usize) {
+            CONNECT.store(orig, Ordering::Relaxed);
+        }
+    }
+}
 
 /// The redirection of ALL.Net's connections only (the game's process: the server is
 /// amdaemon's; port 80: the game's own game server, `gs.rs`).
 pub(crate) fn init_redirect() {
     IN_GAME.store(true, Ordering::Relaxed);
     unsafe {
-        if let Some(orig) = iat::hook_ordinal(iat::game_module(), "WS2_32.dll", 4, socket_connect as *const () as usize) {
-            SOCKET_CONNECT.store(orig, Ordering::Relaxed);
-        }
+        hook_socket_connect();
         if let Some(orig) = iat::hook("ws2_32.dll", "WSAConnect", wsa_connect as *const () as usize) {
             WSA_CONNECT.store(orig, Ordering::Relaxed);
         }
@@ -291,9 +367,7 @@ pub(crate) fn init_redirect() {
 
 pub(crate) fn init() {
     unsafe {
-        if let Some(orig) = iat::hook_ordinal(iat::game_module(), "WS2_32.dll", 4, socket_connect as *const () as usize) {
-            SOCKET_CONNECT.store(orig, Ordering::Relaxed);
-        }
+        hook_socket_connect();
         if let Some(orig) = iat::hook("ws2_32.dll", "WSAConnect", wsa_connect as *const () as usize) {
             WSA_CONNECT.store(orig, Ordering::Relaxed);
         }
