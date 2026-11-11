@@ -76,6 +76,9 @@
 //! Pop Moto (`WAL_ARCADEPC_BOARD=popmoto`, x86 build): `popmoto.rs` is its `USB_board.dll` (the
 //! handlebar, throttle lever, keys, coins) and patches its engine's scripts as the community one.
 //!
+//! Senninha GP (`WAL_ARCADEPC_BOARD=senninha`, x86 build): `senninha.rs` is its `s_input.dll`
+//! (the wheel, pedals, switches) in each of its engine programs.
+//!
 //! Subway Surfers Arcade (`WAL_ARCADEPC_BOARD=subway`): `subway.rs` posts its cabinet's keys and
 //! the hoverboard's double tap, and is its lamps' silent Arduino.
 //!
@@ -107,14 +110,37 @@
 //! The House of the Dead 2: Remake (`WAL_ARCADEPC_BOARD=hotd2`, x64 build): `hotd2.rs` plays
 //! player 1's mouse with the gun, player 2 on a pad, and puts the crosshairs on the guns (Mono).
 //!
+//! The House of the Dead: Remake (`WAL_ARCADEPC_BOARD=hotdr`, x64 build): `hotdr.rs` writes
+//! both guns into its arcade plugin's DemulShooter shared memory, posts its keys and sets the
+//! plugin's settings.
+//!
+//! The House of the Dead: Overkill (`WAL_ARCADEPC_BOARD=hotdo`, x86 build): `hotdo.rs` plays its
+//! mouse (the cursor, DirectInput's buttons) and its DirectInput keyboard with the gun.
+//!
 //! Mad Bullets (`WAL_ARCADEPC_BOARD=madbullets`, x86 build): `madbullets.rs` plays its mouse
 //! with the gun.
 //!
-//! Games with a DemulShooter BepInEx plugin (Quick Shot Arcade, Wild West Shoot Out,
-//! `WAL_DEMUL_PORT`): `demul.rs` is the plugin's TCP client (guns) and posts its keys (coin,
+//! Pull The Trigger (`WAL_ARCADEPC_BOARD=pullthetrigger`, x86 build): `pullthetrigger.rs`
+//! plays its mouse and keys with the gun (the cabinet's COM2 gun board left absent).
+//!
+//! The House of the Dead 3 (`WAL_ARCADEPC_BOARD=hotd3`, x86 build): `hotd3.rs` applies the
+//! community ArcadeMod's patches itself and writes both guns into the game's input blocks.
+//!
+//! Plants vs. Zombies: The Last Stand (`WAL_ARCADEPC_BOARD=pvz`, x86 build): `pvz.rs` patches
+//! its Shell as the community did and starts the game with the payload, which plays its mouse
+//! with the gun.
+//!
+//! Wild West Shoot Out (`WAL_ARCADEPC_BOARD=wws`, x86 build): `wws.rs` emulates its COM1 board,
+//! stubs its camera and dongle and writes the guns into the game's camera data (no plugin).
+//!
+//! Savage Quest (`WAL_ARCADEPC_BOARD=savagequest`, x86 build): `savagequest.rs` is the pad
+//! the community `winsavage.exe` loader reads into the DOS game's joystick.
+//!
+//! Games with a DemulShooter BepInEx plugin (Quick Shot Arcade, `WAL_DEMUL_PORT`): `demul.rs` is the plugin's TCP client (guns) and posts its keys (coin,
 //! operator buttons); no pads. `xmlset.rs`: a game's XML settings set at start
 //! (`WAL_ARCADEPC_XML`, Wild West Shoot Out's free play). Mars Sortie
-//! (`WAL_ARCADEPC_BOARD=marssortie`, with its plugin): `marssortie.rs` patches its settings'
+//! (`WAL_ARCADEPC_BOARD=marssortie`, no plugin): `marssortie.rs` feeds its laser guns and board
+//! signals into the game, patches its settings'
 //! getters (free play, crosshairs, no photos) and posts its operator menus' keypad keys.
 //!
 //! Family Guy Bowling Arcade (`WAL_ARCADEPC_BOARD=teamplay`): `teamplay.rs` is the Linux
@@ -149,6 +175,14 @@ mod gamewax;
 #[cfg(target_arch = "x86_64")]
 mod hotd2;
 #[cfg(target_arch = "x86")]
+mod hotd3;
+#[cfg(target_arch = "x86")]
+mod hotdo;
+#[cfg(target_arch = "x86_64")]
+mod hotdr;
+#[cfg(target_arch = "x86")]
+mod hotdo_peer;
+#[cfg(target_arch = "x86")]
 mod interface;
 #[cfg(target_arch = "x86")]
 mod madbullets;
@@ -165,7 +199,15 @@ mod pads;
 #[cfg(target_arch = "x86")]
 mod popmoto;
 #[cfg(target_arch = "x86")]
+mod pullthetrigger;
+#[cfg(target_arch = "x86")]
+mod pvz;
+#[cfg(target_arch = "x86")]
 mod sdc2;
+#[cfg(target_arch = "x86")]
+mod senninha;
+#[cfg(target_arch = "x86")]
+mod savagequest;
 mod softkey;
 mod spacewarp;
 mod subway;
@@ -177,6 +219,8 @@ mod unrealio;
 mod vcthunder;
 #[cfg(target_arch = "x86")]
 mod vsioboard;
+#[cfg(target_arch = "x86")]
+mod wws;
 #[cfg(target_arch = "x86")]
 mod xio;
 mod xmlset;
@@ -418,6 +462,17 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 wal_payload_common::input_filter::init(unity, hotd2::key_held);
                 hotd2::init(unity);
             }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "hotdo" => {
+                pads::disconnect();
+                hotdo::init();
+            }
+            #[cfg(target_arch = "x86_64")]
+            _ if board.trim() == "hotdr" => {
+                pads::disconnect();
+                wal_payload_common::input_filter::init(unity, demul::key_held);
+                hotdr::init();
+            }
             _ if board.trim() == "teamplay" => {
                 pads::disconnect();
                 // Unity 5.4: the player is the executable
@@ -431,11 +486,33 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 madbullets::init();
             }
             #[cfg(target_arch = "x86")]
+            _ if board.trim() == "hotd3" => {
+                pads::disconnect();
+                hotd3::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "pullthetrigger" => {
+                pads::disconnect();
+                pullthetrigger::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "pvz" => {
+                pads::disconnect();
+                pvz::init();
+            }
+            #[cfg(target_arch = "x86")]
             _ if board.trim() == "popmoto" => {
                 pads::disconnect();
                 let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
                 wal_payload_common::input_filter::init(exe, |_| false);
                 popmoto::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "senninha" => {
+                pads::disconnect();
+                let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+                wal_payload_common::input_filter::init(exe, |_| false);
+                senninha::init();
             }
             _ if board.trim() == "subway" => {
                 pads::disconnect();
@@ -444,6 +521,27 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
             _ if board.trim() == "mame" => {
                 pads::disconnect();
                 mame::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "wws" => {
+                pads::disconnect();
+                // Unity 5.6: the player is the executable
+                let player = if unity != 0 { unity } else { unsafe { GetModuleHandleW(std::ptr::null()) as usize } };
+                wal_payload_common::input_filter::init(player, |_| false);
+                wws::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "savagequest" => {
+                pads::custom(savagequest::gamepad);
+                // winsavage.exe's keys are the DOS game's keyboard: the real one filtered
+                let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+                wal_payload_common::input_filter::init(exe, |_| false);
+            }
+            _ if board.trim() == "marssortie" => {
+                pads::disconnect();
+                // Unity 5.4: the player is the executable
+                let player = if unity != 0 { unity } else { unsafe { GetModuleHandleW(std::ptr::null()) as usize } };
+                wal_payload_common::input_filter::init(player, demul::key_held);
             }
             _ if board.trim() == "commking" => {
                 pads::disconnect();
@@ -463,4 +561,15 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
         }
     }
     1
+}
+
+/// The 3D GameStudio engine's plugin entry (Pop Moto's `USB_board.dll`, Senninha GP's
+/// `s_input.dll`): the plugin SDK version the engine expects.
+#[cfg(target_arch = "x86")]
+#[unsafe(no_mangle)]
+pub extern "C" fn A6_DLLAPI(_a: i32) -> i32 {
+    if std::env::var("WAL_ARCADEPC_BOARD").is_ok_and(|b| b.trim() == "popmoto") {
+        popmoto::engine_patches();
+    }
+    630
 }

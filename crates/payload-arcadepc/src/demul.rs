@@ -160,13 +160,16 @@ fn fields() -> Option<&'static (Vec<Field>, usize)> {
 
 /// A player's state in a packet: the aim (window pixels, `y` from the bottom), the buttons.
 #[derive(Clone, Copy, Default)]
-struct Player {
-    x: f32,
-    y: f32,
-    trigger: bool,
-    reload: bool,
+pub(crate) struct Player {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) trigger: bool,
+    pub(crate) reload: bool,
     action: bool,
-    change: bool,
+    pub(crate) change: bool,
+    /// The gun on the picture (not off the screen or the window).
+    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+    pub(crate) on_picture: bool,
 }
 
 /// The input packet of the players' sticks, for a game window `area`.
@@ -210,7 +213,7 @@ fn packet(area: Option<(f32, f32, f32, f32)>, crosshairs: bool) -> Vec<u8> {
 }
 
 /// `WAL_DEMUL_RESOLUTION=<w>x<h>`: the game's resolution, its picture centered in its window.
-fn resolution() -> Option<(f32, f32)> {
+pub(crate) fn resolution() -> Option<(f32, f32)> {
     static RESOLUTION: OnceLock<Option<(f32, f32)>> = OnceLock::new();
     *RESOLUTION.get_or_init(|| {
         let v = std::env::var("WAL_DEMUL_RESOLUTION").ok()?;
@@ -220,7 +223,7 @@ fn resolution() -> Option<(f32, f32)> {
 }
 
 /// Player `player`'s state, for a game window `area`.
-fn player_state(player: usize, area: Option<(f32, f32, f32, f32)>) -> Player {
+pub(crate) fn player_state(player: usize, area: Option<(f32, f32, f32, f32)>) -> Player {
     let screen = screen_size();
     let stick = input(player);
     let natives = pressed(player);
@@ -269,6 +272,7 @@ fn player_state(player: usize, area: Option<(f32, f32, f32, f32)>) -> Player {
         reload: on(Native::Reload) || (trigger && offscreen),
         action: on(Native::Action),
         change: on(Native::Change),
+        on_picture: !offscreen,
     }
 }
 
@@ -303,7 +307,7 @@ fn player_key(player: usize, vk: u16) -> u16 {
 }
 
 /// Posts the keys pressed and released since `previous` to the game window.
-fn update_keys(hwnd: HWND, previous: &mut [u64; 4]) {
+pub(crate) fn update_keys(hwnd: HWND, previous: &mut [u64; 4]) {
     let held = keys_held();
     if hwnd.is_null() || held == *previous {
         return;
