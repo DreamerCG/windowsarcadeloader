@@ -96,18 +96,22 @@ readonly_sections: {}
 # Runs the game in gamescope (its own X server, the picture scaled to the screen): for games
 # needing a screen mode the desktop does not have (Gundam Spirits of Zeon 2 players: 1280x480).
 # width/height: the game's screen (gamescope -w/-h), args: the rest (output, scaler, window).
+# narrow_screen_only: enabled only on a screen narrower than width x height (a 4:3 screen for
+# a 16:9 game: Initial D THE ARCADE), the game's own window on the others.
 gamescope:
   enabled: false
   bin: gamescope
   width: 0
   height: 0
   args: [-S, stretch, -f]
+  narrow_screen_only: false
 # Files copied into the run directory next to the executable, in place of the game's own:
 # <name in the run directory>: <source, relative to the root> (e.g. a missing config file).
 # A name with a folder ("dir/file") is a path from the game root. A source "{dump}/<path>" is
 # a file of the dump, from its root (a DLL the dump keeps in another folder), "{payloads}/<file>"
 # a program built with the payloads, "{runner}/<path>" a file of the wine runner (a component it
-# ships: "{runner}/lib/wine/gxvk/i386-windows/glide2x.dll").
+# ships: "{runner}/lib/wine/gxvk/i386-windows/glide2x.dll"). "{WAL_...}" in a source is that
+# variable's value (a file chosen by an option, as the game arguments).
 files: {}
 # Files copied into the dump only when it does not have them yet (default settings or
 # calibration the game then keeps updating): <path from the dump root>: <source> (a source
@@ -299,9 +303,12 @@ input:
   # Lightguns and mice aiming like guns (as batocera-wine-guns), for gun games: guns (udev
   # ID_INPUT_GUN=1, or absolute pointers when no device has that tag) take players 1, 2... in
   # device order, then mice
-  # (guns_mouse) the remaining players. Not grabbed: the game still sees them as X11 mice.
+  # (guns_mouse) the remaining players.
   guns_enabled: false
   guns_mouse: true
+  # The guns grabbed: their motion and clicks never reach the desktop (a Sinden's off-screen
+  # reload clicked at the screen's edge: the game window lost the focus). Mice never are.
+  guns_grab: true
   # Most mice used as guns (0: all). A laptop's TrackPoint and touchpad report the same
   # button press: two guns firing at once for one click (set 1).
   guns_mice: 0

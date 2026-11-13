@@ -30,7 +30,8 @@
 //! places on the desktop). Harikiri Professional Baseball's test menu makes its back buffer and then its window
 //! the client size it reads (scaled again on each turn otherwise), its game subtracts its
 //! window's origin from its touch position, already in desktop coordinates. `WM_SIZE` gives
-//! that client size too.
+//! that client size too. `WAL_DESKTOP_CLIENT_POINTS=1`: `ClientToScreen` takes the client's
+//! points in those units (SDL2 reads its size as its client's corner on the screen).
 //!
 //! `WAL_DESKTOP_STRETCH=1`: with `WAL_KEEP_ASPECT_RATIO=0` (Batocera ES's KEEP ASPECT RATIO off)
 //! the desktop is stretched over the whole screen instead (each axis its own scale): a wide game
@@ -59,6 +60,12 @@ pub fn size() -> Option<(i32, i32)> {
     SIZE.get().copied()
 }
 
+/// `WAL_DESKTOP_CLIENT`: the client size the game's window answers (the desktop's), for the
+/// payload's own mouse messages in the game's units.
+pub fn client_size() -> Option<(i32, i32)> {
+    if CLIENT.load(Ordering::Relaxed) { size() } else { None }
+}
+
 static ORIG_METRICS: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SPI_A: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SPI_W: AtomicUsize = AtomicUsize::new(0);
@@ -68,6 +75,8 @@ static ORIG_MONITOR_W: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// `WAL_DESKTOP_CLIENT=1`.
 static CLIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// `WAL_DESKTOP_CLIENT_POINTS=1`: `ClientToScreen`'s points in the client's desktop units.
+static POINTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static ORIG_ENUM_A: AtomicUsize = AtomicUsize::new(0);
 static ORIG_ENUM_W: AtomicUsize = AtomicUsize::new(0);
 static ORIG_ENUM_EX_A: AtomicUsize = AtomicUsize::new(0);
@@ -81,6 +90,7 @@ static ORIG_CREATE_A: AtomicUsize = AtomicUsize::new(0);
 static ORIG_CREATE_W: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SET_POS: AtomicUsize = AtomicUsize::new(0);
 static ORIG_MOVE: AtomicUsize = AtomicUsize::new(0);
+static ORIG_SET_PLACEMENT: AtomicUsize = AtomicUsize::new(0);
 static ORIG_CLIENT_TO_SCREEN: AtomicUsize = AtomicUsize::new(0);
 static ORIG_CLIENT_RECT: AtomicUsize = AtomicUsize::new(0);
 static ORIG_WINDOW_RECT: AtomicUsize = AtomicUsize::new(0);
@@ -150,9 +160,56 @@ fn top_level(parent: P, style: u32) -> bool {
 
 type CreateWindow<T> = unsafe extern "system" fn(u32, *const T, *const T, u32, i32, i32, i32, i32, P, P, P, P) -> P;
 
+/// A child window covering the whole desktop (`<w>x<h>` at 0,0) of a top-level window: its
+/// parent's real client area. Umihara Kawase Fresh!, Cotton Rock 'n' Roll draw OpenGL into a
+/// 1920x1080 child of their fitted window (on a 1600x1200 screen its top left only showed).
+fn desktop_child(parent: P, x: i32, y: i32, w: i32, h: i32) -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
+    let (dw, dh) = size()?;
+    if parent.is_null() || (x, y, w, h) != (0, 0, dw, dh) || !is_top_level(parent) {
+        return None;
+    }
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    if unsafe { GetClientRect(parent, &mut r) } == 0 || r.right <= 0 || r.bottom <= 0 || (r.right, r.bottom) == (dw, dh) {
+        return None;
+    }
+    log!("desktop: child window {w}x{h} at 0,0 -> {}x{} (its parent's client area)", r.right, r.bottom);
+    Some((0, 0, r.right, r.bottom))
+}
+
+/// The child windows [`desktop_child`] fitted: their client size answers in desktop units too
+/// (`WAL_DESKTOP_CLIENT`: Umihara Kawase Fresh! letterboxed its 16:9 viewport in the 4:3 child).
+static CHILDREN: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// A fitted child: remembered and subclassed, its `WM_SIZE` in desktop units too (GLUT sizes its
+/// viewport from it), sent again for a child created at its size.
+fn fitted_child(hwnd: P, created: bool) {
+    if hwnd.is_null() {
+        return;
+    }
+    {
+        let mut children = CHILDREN.lock().unwrap();
+        if children.contains(&(hwnd as usize)) {
+            return;
+        }
+        children.push(hwnd as usize);
+    }
+    subclass(hwnd);
+    if created {
+        size_again(hwnd);
+    }
+}
+
+fn is_fitted_child(hwnd: P) -> bool {
+    CHILDREN.lock().unwrap().contains(&(hwnd as usize))
+}
+
 /// A window created with a size, top-level: fitted.
 fn created(style: u32, parent: P, x: i32, y: i32, w: i32, h: i32) -> (i32, i32, i32, i32) {
-    if !top_level(parent, style) || w == CW_USEDEFAULT || w <= 0 || h <= 0 {
+    if !top_level(parent, style) {
+        return desktop_child(parent, x, y, w, h).unwrap_or((x, y, w, h));
+    }
+    if w == CW_USEDEFAULT || w <= 0 || h <= 0 {
         return (x, y, w, h);
     }
     let (x, y) = if x == CW_USEDEFAULT { (0, 0) } else { (x, y) };
@@ -163,8 +220,12 @@ unsafe extern "system" fn create_a(
     ex: u32, class: *const u8, title: *const u8, style: u32, x: i32, y: i32, w: i32, h: i32, parent: P, menu: P, inst: P, param: P,
 ) -> P {
     let orig: CreateWindow<u8> = unsafe { std::mem::transmute(ORIG_CREATE_A.load(Ordering::Relaxed)) };
+    let child = !top_level(parent, style) && desktop_child(parent, x, y, w, h).is_some();
     let (x, y, w, h) = created(style, parent, x, y, w, h);
     let hwnd = unsafe { orig(ex, class, title, style, x, y, w, h, parent, menu, inst, param) };
+    if child {
+        fitted_child(hwnd, true);
+    }
     if !hwnd.is_null() && top_level(parent, style) {
         subclass(hwnd);
         size_again(hwnd);
@@ -177,8 +238,12 @@ unsafe extern "system" fn create_w(
     ex: u32, class: *const u16, title: *const u16, style: u32, x: i32, y: i32, w: i32, h: i32, parent: P, menu: P, inst: P, param: P,
 ) -> P {
     let orig: CreateWindow<u16> = unsafe { std::mem::transmute(ORIG_CREATE_W.load(Ordering::Relaxed)) };
+    let child = !top_level(parent, style) && desktop_child(parent, x, y, w, h).is_some();
     let (x, y, w, h) = created(style, parent, x, y, w, h);
     let hwnd = unsafe { orig(ex, class, title, style, x, y, w, h, parent, menu, inst, param) };
+    if child {
+        fitted_child(hwnd, true);
+    }
     if !hwnd.is_null() && top_level(parent, style) {
         subclass(hwnd);
         size_again(hwnd);
@@ -209,6 +274,14 @@ unsafe extern "system" fn set_window_pos(hwnd: P, after: P, x: i32, y: i32, cx: 
         let (nx, ny, nw, nh) = to_screen(if flags & SWP_NOMOVE != 0 { 0 } else { x }, if flags & SWP_NOMOVE != 0 { 0 } else { y }, cx, cy);
         return unsafe { orig(hwnd, after, nx, ny, nw, nh, flags & !SWP_NOMOVE) };
     }
+    // a child's size alone (SWP_NOMOVE): taken as at 0,0
+    let (px, py) = if flags & SWP_NOMOVE != 0 { (0, 0) } else { (x, y) };
+    if flags & SWP_NOSIZE == 0
+        && let Some((nx, ny, nw, nh)) = desktop_child(unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetParent(hwnd) }, px, py, cx, cy)
+    {
+        fitted_child(hwnd, false);
+        return unsafe { orig(hwnd, after, nx, ny, nw, nh, flags) };
+    }
     unsafe { orig(hwnd, after, x, y, cx, cy, flags) }
 }
 
@@ -218,7 +291,29 @@ unsafe extern "system" fn move_window(hwnd: P, x: i32, y: i32, cx: i32, cy: i32,
         let (nx, ny, nw, nh) = to_screen(x, y, cx, cy);
         return unsafe { orig(hwnd, nx, ny, nw, nh, repaint) };
     }
+    if let Some((nx, ny, nw, nh)) = desktop_child(unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetParent(hwnd) }, x, y, cx, cy) {
+        fitted_child(hwnd, false);
+        return unsafe { orig(hwnd, nx, ny, nw, nh, repaint) };
+    }
     unsafe { orig(hwnd, x, y, cx, cy, repaint) }
+}
+
+/// `SetWindowPlacement`: a top-level window's normal place (WINDOWPLACEMENT's rcNormalPosition,
+/// +28) fitted as `SetWindowPos` (Guilty Gear Xrd's Unreal Engine 3 sized its window to the
+/// 1920x1080 desktop with it, unscaled on a 1600x1200 screen).
+unsafe extern "system" fn set_window_placement(hwnd: P, placement: *const u8) -> i32 {
+    let orig: unsafe extern "system" fn(P, *const u8) -> i32 = unsafe { std::mem::transmute(ORIG_SET_PLACEMENT.load(Ordering::Relaxed)) };
+    if placement.is_null() || !is_top_level(hwnd) {
+        return unsafe { orig(hwnd, placement) };
+    }
+    let mut copy = [0u8; 44];
+    unsafe { std::ptr::copy_nonoverlapping(placement, copy.as_mut_ptr(), copy.len()) };
+    let r = unsafe { &mut *(copy.as_mut_ptr().add(28) as *mut RECT) };
+    if r.right > r.left && r.bottom > r.top {
+        let (x, y, w, h) = to_screen(r.left, r.top, r.right - r.left, r.bottom - r.top);
+        *r = RECT { left: x, top: y, right: x + w, bottom: y + h };
+    }
+    unsafe { orig(hwnd, copy.as_ptr()) }
 }
 
 /// `ClientToScreen` (`WAL_DESKTOP_CLIENT`): a point of the game's desktop (its fitted window's
@@ -236,8 +331,19 @@ unsafe extern "system" fn client_to_screen(hwnd: P, point: *mut windows_sys::Win
     }
     if ok != 0 && !point.is_null() {
         let p = unsafe { &mut *point };
-        let (x, y) = from_screen(p.x as f64, p.y as f64);
-        (p.x, p.y) = (x.round() as i32, y.round() as i32);
+        if POINTS.load(Ordering::Relaxed) && (is_top_level(hwnd) || is_fitted_child(hwnd)) {
+            // `WAL_DESKTOP_CLIENT_POINTS=1`: a point of a client area in desktop units
+            // (GetClientRect's): the client origin's place on the desktop added (scaling the
+            // whole point: SDL2's client corner 1920x1080 became 2304x972, its window's size)
+            let mut origin = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+            unsafe { orig(hwnd, &mut origin) };
+            let (ox, oy) = from_screen(origin.x as f64, origin.y as f64);
+            let (dx, dy) = (p.x - origin.x, p.y - origin.y);
+            (p.x, p.y) = (ox.round() as i32 + dx, oy.round() as i32 + dy);
+        } else {
+            let (x, y) = from_screen(p.x as f64, p.y as f64);
+            (p.x, p.y) = (x.round() as i32, y.round() as i32);
+        }
     }
     ok
 }
@@ -246,13 +352,23 @@ unsafe extern "system" fn client_to_screen(hwnd: P, point: *mut windows_sys::Win
 unsafe extern "system" fn client_rect(hwnd: P, rect: *mut RECT) -> i32 {
     let orig: unsafe extern "system" fn(P, *mut RECT) -> i32 = unsafe { std::mem::transmute(ORIG_CLIENT_RECT.load(Ordering::Relaxed)) };
     let ok = unsafe { orig(hwnd, rect) };
-    if ok != 0 && !rect.is_null() && is_top_level(hwnd) {
+    if ok != 0 && !rect.is_null() && (is_top_level(hwnd) || is_fitted_child(hwnd)) {
         if crate::border::config().is_some() && let Some((w,h))=size() {
             unsafe { *rect=RECT { left:0,top:0,right:w,bottom:h }; }
             return ok;
         }
         let (sx, sy, _, _) = fit();
         let r = unsafe { &mut *rect };
+        // a client area larger than its window (SDL2's borderless window answers WM_NCCALCSIZE
+        // with its own size, in the desktop's units: scaled again, Rolling Gunner's 1920x1080
+        // became 2765x875): the window's
+        let mut w = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if is_top_level(hwnd)
+            && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut w) } != 0
+            && (r.right - r.left > w.right - w.left || r.bottom - r.top > w.bottom - w.top)
+        {
+            (r.left, r.top, r.right, r.bottom) = (0, 0, w.right - w.left, w.bottom - w.top);
+        }
         r.right = r.left + (f64::from(r.right - r.left) / sx).round() as i32;
         r.bottom = r.top + (f64::from(r.bottom - r.top) / sy).round() as i32;
     }
@@ -340,6 +456,46 @@ unsafe extern "system" fn monitor_w(monitor: P, info: *mut u8) -> i32 {
 /// The window procedures replaced by [`window_proc`]: window, original.
 static PROCS: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
 
+thread_local! {
+    /// The messages (window, message, parameters) [`window_proc`] is passing on to the
+    /// procedure behind it.
+    static IN_ORIG: std::cell::RefCell<Vec<(usize, u32, usize, isize)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `SetWindowLong(Ptr)W(GWLP_WNDPROC)` on a window [`subclass`]ed: the new procedure goes
+/// behind [`window_proc`], which stays in front (SDL2 replaces the procedure of the window it
+/// created: its `WM_NCCALCSIZE` and `WM_SIZE` then never passed here). The previous procedure
+/// answered is [`window_proc`], as `GetWindowLong` gives it.
+fn set_proc(hwnd: P, index: i32, value: isize) -> Option<isize> {
+    const GWLP_WNDPROC: i32 = -4;
+    if index != GWLP_WNDPROC || value == 0 || value as usize == window_proc as *const () as usize {
+        return None;
+    }
+    let mut procs = PROCS.lock().unwrap();
+    let entry = procs.iter_mut().find(|(h, _)| *h == hwnd as usize)?;
+    entry.1 = value as usize;
+    Some(window_proc as *const () as usize as isize)
+}
+
+static ORIG_SET_LONG_W: AtomicUsize = AtomicUsize::new(0);
+static ORIG_SET_LONG_PTR_W: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "system" fn set_long_w(hwnd: P, index: i32, value: isize) -> isize {
+    if let Some(previous) = set_proc(hwnd, index, value) {
+        return previous;
+    }
+    let orig: unsafe extern "system" fn(P, i32, isize) -> isize = unsafe { std::mem::transmute(ORIG_SET_LONG_W.load(Ordering::Relaxed)) };
+    unsafe { orig(hwnd, index, value) }
+}
+
+unsafe extern "system" fn set_long_ptr_w(hwnd: P, index: i32, value: isize) -> isize {
+    if let Some(previous) = set_proc(hwnd, index, value) {
+        return previous;
+    }
+    let orig: unsafe extern "system" fn(P, i32, isize) -> isize = unsafe { std::mem::transmute(ORIG_SET_LONG_PTR_W.load(Ordering::Relaxed)) };
+    unsafe { orig(hwnd, index, value) }
+}
+
 /// Puts [`window_proc`] in front of a top-level window's procedure.
 fn subclass(hwnd: P) {
     use windows_sys::Win32::UI::WindowsAndMessaging::GWLP_WNDPROC;
@@ -365,6 +521,12 @@ unsafe extern "system" fn window_proc(hwnd: P, msg: u32, wparam: usize, lparam: 
     let Some(orig) = PROCS.lock().unwrap().iter().find(|(h, _)| *h == hwnd as usize).map(|(_, o)| *o) else {
         return 0;
     };
+    // called back by the procedure behind this one with the message it is handling: that
+    // procedure keeps this one as its previous one (SDL2: Rolling Gunner's window; calling it
+    // again recursed until the stack overflowed): the chain ends here
+    if IN_ORIG.with(|s| s.borrow().contains(&(hwnd as usize, msg, wparam, lparam))) {
+        return unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
     // `WAL_DESKTOP_ACTIVE`: the window's deactivation not seen (WM_ACTIVATEAPP false, WM_ACTIVATE
     // inactive, WM_KILLFOCUS)
     const WM_ACTIVATE: u32 = 0x0006;
@@ -389,14 +551,27 @@ unsafe extern "system" fn window_proc(hwnd: P, msg: u32, wparam: usize, lparam: 
     // `GetClientRect` gives it (Fantasy Soccer's Unreal Engine on Batocera's Xwayland: its back
     // buffer resized to the 1600x1200 window, its 1920x1080 view drawn into the top left)
     const WM_SIZE: u32 = 0x0005;
-    let lparam = if CLIENT.load(Ordering::Relaxed) && msg == WM_SIZE && is_top_level(hwnd) {
+    let lparam = if CLIENT.load(Ordering::Relaxed) && msg == WM_SIZE && (is_top_level(hwnd) || is_fitted_child(hwnd)) {
         let (sx, sy, _, _) = fit();
         let (w, h) = ((lparam & 0xFFFF) as f64 / sx, ((lparam >> 16) & 0xFFFF) as f64 / sy);
         ((h.round() as isize & 0xFFFF) << 16) | (w.round() as isize & 0xFFFF)
     } else {
         lparam
     };
+    // `WM_NCCALCSIZE`: the window's proposed place (its client area's on return)
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    let proposed = (msg == WM_NCCALCSIZE && wparam != 0 && lparam != 0 && is_top_level(hwnd)).then(|| unsafe { *(lparam as *const RECT) });
+    IN_ORIG.with(|s| s.borrow_mut().push((hwnd as usize, msg, wparam, lparam)));
     let r = unsafe { CallWindowProcW(Some(std::mem::transmute::<usize, _>(orig)), hwnd, msg, wparam, lparam) };
+    IN_ORIG.with(|s| s.borrow_mut().pop());
+    // a client area larger than the window (SDL2's borderless window answers its own size, in
+    // the desktop's units: a 1920x1080 client in the 1600x1200 window): the window's
+    if let Some(p) = proposed {
+        let c = unsafe { &mut *(lparam as *mut RECT) };
+        if c.right - c.left > p.right - p.left || c.bottom - c.top > p.bottom - p.top {
+            *c = p;
+        }
+    }
     // Unity's procedure puts its own size back (WM_WINDOWPOSCHANGING): fitted again
     if msg == windows_sys::Win32::UI::WindowsAndMessaging::WM_WINDOWPOSCHANGING && lparam != 0 {
         let pos = lparam as *mut windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPOS;
@@ -668,7 +843,11 @@ pub fn init() {
     let client = crate::border::config().is_some() || std::env::var("WAL_DESKTOP_CLIENT").is_ok_and(|v| v.trim() == "1");
     CLIENT.store(std::env::var("WAL_DESKTOP_CLIENT").is_ok_and(|v| v.trim() == "1"), Ordering::Relaxed);
     ACTIVE.store(std::env::var("WAL_DESKTOP_ACTIVE").is_ok_and(|v| v.trim() == "1"), Ordering::Relaxed);
-    let hooks: [(&str, usize, &AtomicUsize); 20] = [
+    POINTS.store(std::env::var("WAL_DESKTOP_CLIENT_POINTS").is_ok_and(|v| v.trim() == "1"), Ordering::Relaxed);
+    let hooks: [(&str, usize, &AtomicUsize); 23] = [
+        ("SetWindowLongW", set_long_w as *const () as usize, &ORIG_SET_LONG_W),
+        ("SetWindowLongPtrW", set_long_ptr_w as *const () as usize, &ORIG_SET_LONG_PTR_W),
+        ("SetWindowPlacement", set_window_placement as *const () as usize, &ORIG_SET_PLACEMENT),
         ("GetWindowRect", if client { window_rect as *const () as usize } else { 0 }, &ORIG_WINDOW_RECT),
         ("ClientToScreen", if client { client_to_screen as *const () as usize } else { 0 }, &ORIG_CLIENT_TO_SCREEN),
         ("GetClientRect", if client { client_rect as *const () as usize } else { 0 }, &ORIG_CLIENT_RECT),

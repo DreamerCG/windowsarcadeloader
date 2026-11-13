@@ -79,8 +79,21 @@
 //! Senninha GP (`WAL_ARCADEPC_BOARD=senninha`, x86 build): `senninha.rs` is its `s_input.dll`
 //! (the wheel, pedals, switches) in each of its engine programs.
 //!
+//! Monsterous (`WAL_ARCADEPC_BOARD=monsterous`, x86 build): `monsterous.rs` plays its desktop
+//! mode (the coin targets aimed with the stick and fired, coins, the operator switches), drops
+//! SDL's real input events and stretches its picture.
+//!
 //! Subway Surfers Arcade (`WAL_ARCADEPC_BOARD=subway`): `subway.rs` posts its cabinet's keys and
 //! the hoverboard's double tap, and is its lamps' silent Arduino.
+//!
+//! Extreme Off Road (`WAL_ARCADEPC_BOARD=extremeoffroad`): `extremeoffroad.rs` is its COM1
+//! board's `cncommwrapper.dll` (the wheel, pedals, switches, coins) and sets free play.
+//!
+//! Fix-It Felix Jr. (`WAL_ARCADEPC_BOARD=felix`, x86 build): `felix.rs` posts its keys, fits its
+//! window's zoom to the screen and sets free play.
+//!
+//! In The Groove 2 (`WAL_ARCADEPC_BOARD=itg`, x86 build): `itg.rs` is its DirectInput keyboard
+//! (both players' dance pads and menu buttons) and sets its preferences (free play, window).
 //!
 //! Galaxian 3 (`WAL_ARCADEPC_BOARD=mame`, a patched `mame.exe`): `mame.rs` is MAME's raw input
 //! devices (a keyboard and the players' guns, from the virtual sticks).
@@ -88,6 +101,9 @@
 //! Akuma Mortis Immortal (`WAL_ARCADEPC_BOARD=ngun`, x86 build): `ngun.rs` is its parallel port
 //! gun board (`inpout32.dll`'s `Inp32` / `Out32`); the common crosshair option draws the guns
 //! (Direct3D 9).
+//!
+//! Dream Hunting (`WAL_ARCADEPC_BOARD=dreamhunting`, x86 build): `dreamhunting.rs` is its COM1
+//! gun board (gun position, trigger, joystick, coins, test).
 //!
 //! Bug Busters (`WAL_ARCADEPC_BOARD=bugbusters`, x86 build): `bugbusters.rs` writes its guns and
 //! its I/O board's switches into the game; the game draws its own pointers.
@@ -130,6 +146,9 @@
 //! its Shell as the community did and starts the game with the payload, which plays its mouse
 //! with the gun.
 //!
+//! ReRave (`WAL_ARCADEPC_BOARD=rerave`, x86 build): `rerave.rs` is its RaveSvc service (coins,
+//! settings), replaces its dongle checks and plays its touch screen (Unity's mouse).
+//!
 //! Wild West Shoot Out (`WAL_ARCADEPC_BOARD=wws`, x86 build): `wws.rs` emulates its COM1 board,
 //! stubs its camera and dongle and writes the guns into the game's camera data (no plugin).
 //!
@@ -142,6 +161,15 @@
 //! (`WAL_ARCADEPC_BOARD=marssortie`, no plugin): `marssortie.rs` feeds its laser guns and board
 //! signals into the game, patches its settings'
 //! getters (free play, crosshairs, no photos) and posts its operator menus' keypad keys.
+//!
+//! Photo Finish Racing (`WAL_ARCADEPC_BOARD=photofinish`, x86 build): `photofinish.rs` gives
+//! its three players' ball drop and credit keys and emulates its relay board.
+//!
+//! Sega Rally 2 (`WAL_ARCADEPC_BOARD=segarally2`, x86 build): `segarally2.rs` hooks its
+//! MUSASHI input library's DirectInput (the common fake wheel).
+//!
+//! Deathsmiles II (`WAL_ARCADEPC_BOARD=cave`, x86 build): `cave.rs` emulates its COM3 I/O
+//! board.
 //!
 //! Family Guy Bowling Arcade (`WAL_ARCADEPC_BOARD=teamplay`): `teamplay.rs` is the Linux
 //! cabinet's Team Play I/O library (`teamplayio`, `serialio`) for its DllImports.
@@ -160,15 +188,22 @@ mod boys;
 #[cfg(target_arch = "x86")]
 mod bugbusters;
 mod bullseye;
+#[cfg(target_arch = "x86")]
+mod cave;
 mod commking;
 #[cfg(target_arch = "x86")]
 mod comeonbaby;
 mod dcop;
 mod demul;
 #[cfg(target_arch = "x86")]
+mod dreamhunting;
+#[cfg(target_arch = "x86")]
 mod dosbox;
 #[cfg(target_arch = "x86")]
 mod eolith;
+mod extremeoffroad;
+#[cfg(target_arch = "x86")]
+mod felix;
 mod gameport;
 #[cfg(target_arch = "x86")]
 mod gamewax;
@@ -185,11 +220,15 @@ mod hotdo_peer;
 #[cfg(target_arch = "x86")]
 mod interface;
 #[cfg(target_arch = "x86")]
+mod itg;
+#[cfg(target_arch = "x86")]
 mod madbullets;
 mod jxboard;
 mod jxcamera;
 mod mame;
 mod marssortie;
+#[cfg(target_arch = "x86")]
+mod monsterous;
 #[cfg(target_arch = "x86")]
 mod ngun;
 #[cfg(target_arch = "x86")]
@@ -197,17 +236,23 @@ mod robinhood;
 mod topgun2_landscape;
 mod pads;
 #[cfg(target_arch = "x86")]
+mod photofinish;
+#[cfg(target_arch = "x86")]
 mod popmoto;
 #[cfg(target_arch = "x86")]
 mod pullthetrigger;
 #[cfg(target_arch = "x86")]
 mod pvz;
 #[cfg(target_arch = "x86")]
+mod rerave;
+#[cfg(target_arch = "x86")]
 mod sdc2;
 #[cfg(target_arch = "x86")]
 mod senninha;
 #[cfg(target_arch = "x86")]
 mod savagequest;
+#[cfg(target_arch = "x86")]
+mod segarally2;
 mod softkey;
 mod spacewarp;
 mod subway;
@@ -406,6 +451,13 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 ballistics::init();
             }
             #[cfg(target_arch = "x86")]
+            _ if board.trim() == "dreamhunting" => {
+                pads::disconnect();
+                let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+                wal_payload_common::input_filter::init(exe, |_| false);
+                dreamhunting::init();
+            }
+            #[cfg(target_arch = "x86")]
             _ if board.trim() == "bugbusters" => {
                 pads::disconnect();
                 // the CD-ROM check
@@ -501,6 +553,11 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 pvz::init();
             }
             #[cfg(target_arch = "x86")]
+            _ if board.trim() == "rerave" => {
+                pads::disconnect();
+                rerave::init();
+            }
+            #[cfg(target_arch = "x86")]
             _ if board.trim() == "popmoto" => {
                 pads::disconnect();
                 let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
@@ -513,6 +570,16 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
                 wal_payload_common::input_filter::init(exe, |_| false);
                 senninha::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "monsterous" => {
+                pads::disconnect();
+                monsterous::init();
+            }
+            _ if board.trim() == "extremeoffroad" => {
+                pads::disconnect();
+                wal_payload_common::input_filter::init(unity, |_| false);
+                extremeoffroad::init();
             }
             _ if board.trim() == "subway" => {
                 pads::disconnect();
@@ -531,6 +598,28 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 wws::init();
             }
             #[cfg(target_arch = "x86")]
+            _ if board.trim() == "felix" => {
+                pads::disconnect();
+                felix::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "itg" => {
+                pads::disconnect();
+                itg::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "photofinish" => {
+                pads::disconnect();
+                photofinish::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "segarally2" => {
+                pads::disconnect();
+                let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+                wal_payload_common::input_filter::init(exe, |_| false);
+                segarally2::init();
+            }
+            #[cfg(target_arch = "x86")]
             _ if board.trim() == "savagequest" => {
                 pads::custom(savagequest::gamepad);
                 // winsavage.exe's keys are the DOS game's keyboard: the real one filtered
@@ -542,6 +631,13 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 // Unity 5.4: the player is the executable
                 let player = if unity != 0 { unity } else { unsafe { GetModuleHandleW(std::ptr::null()) as usize } };
                 wal_payload_common::input_filter::init(player, demul::key_held);
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "cave" => {
+                pads::disconnect();
+                let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+                wal_payload_common::input_filter::init(exe, |_| false);
+                cave::init();
             }
             _ if board.trim() == "commking" => {
                 pads::disconnect();

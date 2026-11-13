@@ -82,13 +82,12 @@ pub(crate) fn hook(dll: &'static str, name: &'static str, f: usize, orig: &'stat
             *dir = exe.rsplit_once('\\').map(|(d, _)| format!("{d}\\")).unwrap_or_default();
         }
     }
-    {
+    // DONE not held while hooking: a hook may call the game's LoadLibrary, hooked by `loaded`
+    for &base in &modules {
+        apply(base, (dll, name, f, orig));
         let mut done = DONE.lock().unwrap();
-        for &base in &modules {
-            apply(base, (dll, name, f, orig));
-            if !done.contains(&base) {
-                done.push(base);
-            }
+        if !done.contains(&base) {
+            done.push(base);
         }
     }
     if orig.load(Ordering::Relaxed) == 0 {
@@ -109,6 +108,13 @@ fn hook_loads(modules: &[usize]) {
     for &base in modules {
         for (i, (name, f)) in hooks.into_iter().enumerate() {
             if let Some(o) = unsafe { iat::hook_module(base, "kernel32.dll", name, f) } {
+                if o != f && o != export("kernel32.dll", name) && module_of(o) == crate::workarea::this_module() {
+                    // another hook of the payload (the Unity runtime's LoadLibrary, Mono's
+                    // stand-ins for the emulated libraries of the other architecture: replaced,
+                    // Disney Crossy Road's board never started, no coins): kept
+                    unsafe { iat::hook_module(base, "kernel32.dll", name, o) };
+                    continue;
+                }
                 if o != f && ORIG_LOAD[i].load(Ordering::Relaxed) == 0 {
                     ORIG_LOAD[i].store(o, Ordering::Relaxed);
                 }
