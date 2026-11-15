@@ -14,7 +14,8 @@
 //! - `WAL_CROSSHAIR_AXES`: what it follows, `stick` (the left stick, the guns' aim:
 //!   default), `pedals` (`accel` / `brake`, 0..32767 across the screen: the touch pointer of
 //!   Steel Chronicle Victroopers, whose sticks steer) or `right-stick` (`rx` / `ry`: the touch
-//!   pointer of the other touch screens, Yu-Gi-Oh! Duel Terminal 6).
+//!   pointer of the other touch screens, Yu-Gi-Oh! Duel Terminal 6) or `touch` (player 1: the
+//!   touch surface's first finger while one is down, else the left stick: Wonderland Wars' pen).
 //! - `WAL_CROSSHAIR_HIDE`: seconds without moving before it hides (5; 0: never).
 //!
 //! Before each `Present` (payload-common's Direct3D 9 overlay) the crosshairs are drawn into the
@@ -52,6 +53,7 @@ enum Axes {
     LeftStick,
     Pedals,
     RightStick,
+    Touch,
 }
 
 fn axes() -> Axes {
@@ -59,6 +61,7 @@ fn axes() -> Axes {
     *AXES.get_or_init(|| match std::env::var("WAL_CROSSHAIR_AXES").as_deref().map(str::trim) {
         Ok("pedals") => Axes::Pedals,
         Ok("right-stick") => Axes::RightStick,
+        Ok("touch") => Axes::Touch,
         _ => Axes::LeftStick,
     })
 }
@@ -272,6 +275,9 @@ unsafe fn reset(_dev: P) {
     }
 }
 
+/// `WAL_CROSSHAIR_AXES=touch`: player 1's last finger place and the left stick then.
+static LAST_TOUCH: Mutex<Option<((i16, i16), (i16, i16))>> = Mutex::new(None);
+
 /// Who aims (a gun that moved lately) and where.
 fn aims(state: &mut State) -> [Option<(i16, i16)>; MAX_PLAYERS] {
     let now = Instant::now();
@@ -285,7 +291,24 @@ fn aims(state: &mut State) -> [Option<(i16, i16)>; MAX_PLAYERS] {
                 (full(stick.axis(Axis::Accel)), full(stick.axis(Axis::Brake)))
             }
             Axes::RightStick => (stick.axis(Axis::RightX), stick.axis(Axis::RightY)),
-            Axes::LeftStick => (stick.axis(Axis::LeftX), stick.axis(Axis::LeftY)),
+            Axes::Touch if player == 0 => {
+                // the finger's place (0..65535 across the screen to the sticks' -32768..32767),
+                // kept once lifted until the stick moves
+                let left = (stick.axis(Axis::LeftX), stick.axis(Axis::LeftY));
+                let mut last = LAST_TOUCH.lock().unwrap();
+                match crate::touches().first() {
+                    Some(&(x, y)) => {
+                        let touch = ((x as i32 - 32768) as i16, (y as i32 - 32768) as i16);
+                        *last = Some((touch, left));
+                        touch
+                    }
+                    None => match *last {
+                        Some((touch, at)) if at == left => touch,
+                        _ => left,
+                    },
+                }
+            }
+            Axes::LeftStick | Axes::Touch => (stick.axis(Axis::LeftX), stick.axis(Axis::LeftY)),
         };
         if aim != *last {
             *last = aim;
@@ -613,6 +636,10 @@ mod ddraw {
 
 /// The legacy OpenGL functions of the crosshairs (the game's compatibility context).
 struct Gl {
+    /// NV_fragment_program (NVIDIA): its switch `GL_FRAGMENT_PROGRAM_NV` turned off too
+    /// (elsewhere an invalid enum left pending, taken by Project DIVA Arcade's next error check
+    /// for its own call's: its vertex buffers refused)
+    nv_fragment_program: bool,
     gen_textures: unsafe extern "system" fn(i32, *mut u32),
     bind_texture: unsafe extern "system" fn(u32, u32),
     tex_image_2d: unsafe extern "system" fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void),
@@ -647,7 +674,11 @@ fn gl() -> Option<&'static Gl> {
         let wgl: unsafe extern "system" fn(*const u8) -> usize = std::mem::transmute(GetProcAddress(module, c"wglGetProcAddress".as_ptr().cast())?);
         let ext = |name: &std::ffi::CStr| -> Option<usize> { Some(wgl(name.as_ptr().cast())).filter(|&f| f > 3) };
         let core = |name: &std::ffi::CStr| -> Option<usize> { GetProcAddress(module, name.as_ptr().cast()).map(|f| f as usize) };
+        let get_string: unsafe extern "system" fn(u32) -> *const std::ffi::c_char = std::mem::transmute(core(c"glGetString")?);
+        let extensions = get_string(0x1F03); // GL_EXTENSIONS
+        let nv_fragment_program = !extensions.is_null() && std::ffi::CStr::from_ptr(extensions).to_bytes().split(|&b| b == b' ').any(|e| e == b"GL_NV_fragment_program");
         Some(Gl {
+            nv_fragment_program,
             gen_textures: std::mem::transmute(core(c"glGenTextures")?),
             bind_texture: std::mem::transmute(core(c"glBindTexture")?),
             tex_image_2d: std::mem::transmute(core(c"glTexImage2D")?),
@@ -729,7 +760,9 @@ unsafe fn draw_gl_area(ww: i32, wh: i32, area: (f32, f32, f32, f32)) {
         }
         // fixed function: no shader programs (Cg's ARB / NV ones), depth, lighting, fog...
         for cap in [0x8620, 0x8804, 0x8870, 0x0B71, 0x0B50, 0x0B60, 0x0B44, 0x0BC0, 0x0C11, 0x0B90, 0x8513] {
-            (gl.disable)(cap);
+            if cap != 0x8870 || gl.nv_fragment_program {
+                (gl.disable)(cap);
+            }
         }
         (gl.enable)(GL_TEXTURE_2D);
         (gl.enable)(GL_BLEND);

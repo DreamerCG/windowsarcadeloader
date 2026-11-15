@@ -20,6 +20,8 @@
 #![allow(non_snake_case)]
 
 mod devices;
+mod kancolle;
+mod kcserver;
 mod lmaio;
 #[cfg(target_arch = "x86_64")]
 mod unpack;
@@ -32,6 +34,11 @@ use windows_sys::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut c_void) -> i32 {
+    // a new thread: the debugging hardware breakpoints (WAL_HW_BREAK)
+    #[cfg(target_arch = "x86_64")]
+    if reason == 2 {
+        wal_payload_common::crash::hw_break_thread();
+    }
     if reason == DLL_PROCESS_ATTACH {
         wal_payload_common::start("seganu");
         // the game's working directory, relative to its own (game.bat runs it from the dump
@@ -47,6 +54,9 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
         wal_payload_common::jvs_board::init(devices::JVS_PORT);
         devices::init();
         lmaio::init();
+        kancolle::init();
+        // NVIDIA-only OpenGL on other GPUs (KanColle Arcade)
+        wal_payload_common::nvgl::init();
         test_menu();
         log!("seganu: initialized");
     }

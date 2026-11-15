@@ -9,7 +9,8 @@
 //!
 //! While touched the controller streams `T` reports (Puyo Puyo!! Quest reads COM1 itself, its
 //! parser at 0x982830, the `T` handler at 0x982000): a flags byte (1 the touch, 2 still
-//! touched, 4 the release), X and Y little-endian, three unused bytes. The touch: player 1's
+//! touched, 4 the release), X and Y little-endian, the pressure (little-endian, 0-255: full
+//! while touched; Border Break Scramble reads it, FUN_008b31e0), an unused byte. The touch: player 1's
 //! pointer (a mouse acting as a gun, or the left stick) with b8 (the profile maps the mouse
 //! button to it). The game takes the panel's 0-4096 to its screen (`WAL_RINGEDGE_TOUCH_SCREEN`,
 //! default 1360x768), Y from the bottom, then applies its two-point calibration: hod5.ini's
@@ -82,9 +83,19 @@ fn checksum(p: &[u8]) -> u8 {
     p[..9].iter().fold(0xAAu8, |s, b| s.wrapping_add(*b))
 }
 
+/// The packet being written: Border Break Scramble writes its packets a byte at a time.
+static PENDING: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
 fn reply(data: &[u8]) -> Vec<u8> {
+    let mut pending = PENDING.lock().unwrap();
+    pending.extend_from_slice(data);
+    // a packet starts with 0x55
+    let start = pending.iter().position(|&b| b == 0x55).unwrap_or(pending.len());
+    pending.drain(..start);
+    let whole = pending.len() / 10 * 10;
+    let packets: Vec<u8> = pending.drain(..whole).collect();
     let mut out = Vec::new();
-    for p in data.chunks_exact(10).filter(|p| p[0] == 0x55) {
+    for p in packets.chunks_exact(10).filter(|p| p[0] == 0x55) {
         let mut r = p.to_vec();
         match p[1] {
             b'P' => BAUD.store(p[3], Ordering::Relaxed),
@@ -127,7 +138,8 @@ fn stream() -> Vec<u8> {
         (true, true) => 0x02,
         _ => 0x04,
     };
-    let mut r = vec![0x55, b'T', state, x as u8, (x >> 8) as u8, y as u8, (y >> 8) as u8, 0, 0, 0];
+    let pressure = if down { 0xFF } else { 0 };
+    let mut r = vec![0x55, b'T', state, x as u8, (x >> 8) as u8, y as u8, (y >> 8) as u8, pressure, 0, 0];
     r[9] = checksum(&r);
     if down != was {
         log!("touch: {} at {x},{y}", if down { "touch" } else { "release" });

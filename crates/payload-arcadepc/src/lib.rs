@@ -149,6 +149,13 @@
 //! ReRave (`WAL_ARCADEPC_BOARD=rerave`, x86 build): `rerave.rs` is its RaveSvc service (coins,
 //! settings), replaces its dongle checks and plays its touch screen (Unity's mouse).
 //!
+//! Cut The Rope (`WAL_ARCADEPC_BOARD=cuttherope`): `cuttherope.rs` plays the MonoGame mouse
+//! (the touches) and keyboard (the operator keys) of this .NET redemption game, whose serial
+//! board and HID touch panel only exist on its Linux cabinet.
+//!
+//! Go Go Drummer Babe (`WAL_ARCADEPC_BOARD=gogodrummer`, x86 build): `gogodrummerbabe.rs`
+//! emulates its cnComm drum I/O board (`@<code>#` frames: the four drum sensors, coin, buttons).
+//!
 //! Wild West Shoot Out (`WAL_ARCADEPC_BOARD=wws`, x86 build): `wws.rs` emulates its COM1 board,
 //! stubs its camera and dongle and writes the guns into the game's camera data (no plugin).
 //!
@@ -168,13 +175,17 @@
 //! Sega Rally 2 (`WAL_ARCADEPC_BOARD=segarally2`, x86 build): `segarally2.rs` hooks its
 //! MUSASHI input library's DirectInput (the common fake wheel).
 //!
+//! Radikal Bikers (`WAL_ARCADEPC_BOARD=radikalbikers`, x86 build): `radikalbikers.rs` skips
+//! the community emulator's setup dialog and writes its Gaelco 3D board's inputs.
+//!
 //! Deathsmiles II (`WAL_ARCADEPC_BOARD=cave`, x86 build): `cave.rs` emulates its COM3 I/O
 //! board.
 //!
 //! Family Guy Bowling Arcade (`WAL_ARCADEPC_BOARD=teamplay`): `teamplay.rs` is the Linux
 //! cabinet's Team Play I/O library (`teamplayio`, `serialio`) for its DllImports.
 //! 32-bit games get the x86 build (`wal_arcadepc32.dll`). Both: the common crosshair option
-//! (`WAL_CROSSHAIR`) draws player 1's crosshair (`pointer_d3d11`).
+//! (`WAL_CROSSHAIR`) draws player 1's crosshair (`pointer_d3d11`;
+//! the JX boards' other players' too).
 
 #![allow(non_snake_case)]
 
@@ -193,6 +204,7 @@ mod cave;
 mod commking;
 #[cfg(target_arch = "x86")]
 mod comeonbaby;
+mod cuttherope;
 mod dcop;
 mod demul;
 #[cfg(target_arch = "x86")]
@@ -207,6 +219,8 @@ mod felix;
 mod gameport;
 #[cfg(target_arch = "x86")]
 mod gamewax;
+#[cfg(target_arch = "x86")]
+mod gogodrummerbabe;
 #[cfg(target_arch = "x86_64")]
 mod hotd2;
 #[cfg(target_arch = "x86")]
@@ -243,6 +257,8 @@ mod popmoto;
 mod pullthetrigger;
 #[cfg(target_arch = "x86")]
 mod pvz;
+#[cfg(target_arch = "x86")]
+mod radikalbikers;
 #[cfg(target_arch = "x86")]
 mod rerave;
 #[cfg(target_arch = "x86")]
@@ -315,9 +331,11 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 position: demul::gun_in_picture,
                 crosshair: true,
             });
-            // Top Gun 2's second gun
-            if board.trim() == "jxcamera" {
-                wal_payload_common::pointer_d3d11::more_players(2, demul::gun_of_player_in_picture);
+            // Top Gun 2's second gun, Mech Dinosaur's and Wisdom Zombies' guns 2 to 4
+            match board.trim() {
+                "jxcamera" => wal_payload_common::pointer_d3d11::more_players(2, demul::gun_of_player_in_picture),
+                "jxboard" => wal_payload_common::pointer_d3d11::more_players(4, demul::gun_of_player_in_picture),
+                _ => {}
             }
         }
         match std::env::var("WAL_DEMUL_PORT").ok().and_then(|p| p.trim().parse().ok()) {
@@ -633,6 +651,11 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 wal_payload_common::input_filter::init(player, demul::key_held);
             }
             #[cfg(target_arch = "x86")]
+            _ if board.trim() == "radikalbikers" => {
+                pads::disconnect();
+                radikalbikers::init();
+            }
+            #[cfg(target_arch = "x86")]
             _ if board.trim() == "cave" => {
                 pads::disconnect();
                 let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
@@ -645,6 +668,16 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
                 let exe = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
                 wal_payload_common::input_filter::init(exe, |_| false);
                 commking::init();
+            }
+            _ if board.trim() == "cuttherope" => {
+                pads::disconnect();
+                cuttherope::init();
+            }
+            #[cfg(target_arch = "x86")]
+            _ if board.trim() == "gogodrummer" => {
+                pads::disconnect();
+                // HGE native exe: the board plays the game's keys (its own input_filter)
+                gogodrummerbabe::init();
             }
             Some(port) => {
                 pads::disconnect();

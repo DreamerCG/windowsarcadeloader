@@ -7,7 +7,7 @@
 //! profile's `background` list starts amdaemon first). In amdaemon (`daemon.rs`) it writes
 //! the cabinet's system registry values, emulates the keychip driver, the hardware monitor and
 //! the "Type 4" USB I/O board (`io4.rs`, fed by the launcher's sticks). In the game it filters
-//! the real keyboard and pads and answers the LED board on COM1 (`led.rs`).
+//! the real keyboard and pads and answers the LED board on COM1 (payload-common `led.rs`).
 //!
 //! Payload options (profile `env`):
 //! - `WAL_ALLS_GAME_ID` (4 letters), `WAL_ALLS_PLATFORM_ID` (default `ACA1`),
@@ -19,7 +19,7 @@
 //!   (`sysfile.rs`, from amdaemon's second start)
 //! - `WAL_ALLS_ALLNET=1`: ALL.Net authentication accepted (`allnet.rs`; default refused: the game
 //!   plays offline)
-//! - `WAL_ALLS_CLOCK=0`: the real time zone (default Japan's, `clock.rs`); `WAL_ALLS_TIMEWARP=1`:
+//! - `WAL_ALLS_CLOCK=0`: the real time zone (default Japan's, `wal_payload_common::clock`); `WAL_ALLS_TIMEWARP=1`:
 //!   the nightly maintenance hours (Japan 02:00-07:00) skipped
 //! - `WAL_ALLS_BOARD`: the game's controls (`io4.rs`; `hotd`: also the gun sensor board on
 //!   COM1, `gunsensor.rs`, instead of the LED board; `swdc`: the force feedback board on COM1,
@@ -29,7 +29,7 @@
 //!   `hkb`: Chrono Regalia's touch screen as the mouse, its game server, `hkb.rs`; `idz`:
 //!   Initial D ARCADE STAGE Zero, a Nu cabinet: the force feedback board on COM1, the 837-15070
 //!   LED board on COM11, the game server, `idz.rs`)
-//! - `WAL_ALLS_BILLING=1`: ALL.Net's billing server for amdaemon's accounting (`billing.rs`)
+//! - `WAL_ALLS_BILLING=1`: ALL.Net's billing server for amdaemon's accounting (payload-common `billing.rs`)
 //! - `WAL_ALLS_CHILDREN`: programs the game starts, started with the payload (`child.rs`)
 //! - `WAL_ALLS_IDZ_ENGLISH=1`: Initial D ARCADE STAGE Zero in English (`idzenglish.rs`)
 //! - `WAL_ALLS_INI_FILE`: a settings file read as an edited copy (`inifile.rs`)
@@ -53,9 +53,12 @@
 //!   with `WAL_EXE_ENV`)
 //! - `WAL_ALLS_BOARD=cxb`: crossbeats REV. SUNRiSE, a Nu game with amLib linked in and no
 //!   amdaemon (as `chuni`): its REV I/O and LED libraries, touch screen (`cxb.rs`)
+//! - `WAL_ALLS_BOARD=wlw`: Wonderland Wars, a Nu game with amLib linked in and no amdaemon (as
+//!   `chuni`): its touch panel, controller board and pen (`wlw.rs`); the Aime reader in
+//!   `aimeReaderHost.exe`
 //! - `WAL_ALLS_BOARD=chusan`: CHUNITHM SUPERSTAR (amdaemon, IO4: the air sensors; the game:
 //!   slider, LED boards; the title server in amdaemon's ALL.Net server, `chuni.rs`)
-//! - `WAL_ALLS_LED_BOARD`: the LED boards' identity (`led.rs`)
+//! - `WAL_ALLS_LED_BOARD`: the LED boards' identity (payload-common `led.rs`)
 //! - `WAL_ALLS_AMLOG`, `WAL_ALLS_AMLOG_LEVELS`: the game's linked amLib's log (CHUNITHM;
 //!   payload-common's `amlog`)
 //! - `WAL_ALLS_DAEMON_PATCHES`: amdaemon's patches (`<rva>:<hex bytes>,...`)
@@ -65,12 +68,9 @@
 //! names resolved, ALL.Net answered by the payload's server.
 
 mod aime;
-mod aimedb;
 mod allnet;
-mod billing;
 mod child;
 mod chuni;
-mod clock;
 mod cts;
 mod cxb;
 mod daemon;
@@ -84,7 +84,6 @@ mod gs;
 mod gunsensor;
 mod hkb;
 mod hotd;
-mod icf;
 mod idac;
 mod idz;
 mod idzenglish;
@@ -94,13 +93,12 @@ mod indrun;
 mod indstate;
 mod inifile;
 mod io4;
-mod led;
 mod netenv;
-mod pki;
 mod registry;
 mod stat;
 mod sysfile;
 mod udp;
+mod wlw;
 
 use std::ffi::c_void;
 
@@ -134,7 +132,7 @@ pub extern "system" fn DllMain(module: HINSTANCE, reason: u32, _reserved: *mut c
 fn start() {
     {
         wal_payload_common::start("alls");
-        if std::env::var("WAL_ALLS_CLOCK").map_or(true, |v| v.trim() != "0") { clock::init(); }
+        if std::env::var("WAL_ALLS_CLOCK").map_or(true, |v| v.trim() != "0") { wal_payload_common::clock::init(); }
         stat::init();
         if is_daemon() {
             daemon::init();
@@ -159,6 +157,8 @@ fn start() {
             chuni_process();
         } else if std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "cxb") {
             cxb_process();
+        } else if std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "wlw") {
+            wlw_process();
         } else {
             let exe = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) } as usize;
             // the cabinet's input comes from amdaemon's I/O board: the real keyboard and pads
@@ -185,7 +185,7 @@ fn start() {
                 gs::init();
                 // COM1: the force feedback board, COM2 the LED board, COM20 the dashboard
                 ffb::init();
-                led::init("COM2");
+                wal_payload_common::led::init("COM2");
                 dashboard::init();
             } else if std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "idac") {
                 // the game server (Aime card players), the cabinet's Windows (segatools' indrun)
@@ -196,7 +196,7 @@ fn start() {
                 // COM1: the force feedback board (Sega World Drivers Championship's), COM2 the
                 // 837-15070 LED board
                 ffb::init();
-                led::init_15070("COM2");
+                wal_payload_common::led::init_15070("COM2");
             } else if std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "idz") {
                 // Initial D ARCADE STAGE Zero (segatools' idzhook): its game server (Aime card
                 // players), COM1 the force feedback board (Sega World Drivers Championship's),
@@ -212,7 +212,7 @@ fn start() {
                 udp::init_with_echo();
                 gs::init_plain();
                 ffb::init();
-                led::init_15070("COM11");
+                wal_payload_common::led::init_15070("COM11");
             } else if std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "hkb") {
                 // Chrono Regalia: the touch screen (the mouse), the touch panel and LED board
                 // off in its configuration; the game server (Aime card players), Mono's clock
@@ -223,7 +223,7 @@ fn start() {
                 chuni::init_chusan();
             } else {
                 // the LED board's port (Mario & Sonic at Rio 2016: COM12)
-                led::init(std::env::var("WAL_ALLS_LED_PORT").as_deref().map_or("COM1", str::trim));
+                wal_payload_common::led::init(std::env::var("WAL_ALLS_LED_PORT").as_deref().map_or("COM1", str::trim));
             }
             if std::env::var("WAL_ALLS_CTS").is_ok_and(|v| v.trim() == "1") {
                 cts::init();
@@ -275,6 +275,25 @@ fn cxb_process() {
     daemon::init();
     // its amLib checks in with ALL.Net's billing server itself (else error 8113, the billing
     // mode unknown)
+    allnet::serve_billing();
+}
+
+/// Wonderland Wars' programs: the game (its devices, `wlw.rs`, then the system's in its own
+/// process) and the Aime reader's host.
+fn wlw_process() {
+    let exe_name = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase())).unwrap_or_default();
+    if exe_name == "aimereaderhost.exe" {
+        aime::init();
+        netenv::init_game();
+        allnet::init_redirect();
+        return;
+    }
+    let exe = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) } as usize;
+    wal_payload_common::input_filter::init(exe, |_| false);
+    wal_payload_common::patches::apply();
+    wal_payload_common::amlog::init("ALLS");
+    wlw::init();
+    daemon::init();
     allnet::serve_billing();
 }
 

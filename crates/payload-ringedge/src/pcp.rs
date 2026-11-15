@@ -3,7 +3,8 @@
 //! keychip, TCP 40106, its binary data channel 40107) and the auth service (amAuth, RingEdge 2:
 //! TCP 40190). The network service (amNetwork, 40104); the test menus also open the
 //! installer (amInstall, 40102), the game delivery
-//! services (amGdeliver 40108, amGcatcher 40110) and the storage service (amStorage, 40114, its
+//! services (amGdeliver 40108, amGcatcher 40110, amGfetcher 40113: Project DIVA Arcade's
+//! download state) and the storage service (amStorage, 40114, its
 //! binary channel 40115).
 //!
 //! PCP is a text protocol: the service sends the prompt `>`, the client a request line
@@ -47,10 +48,29 @@ const MXINSTALLER: u16 = 40102;
 const MXNETWORK: u16 = 40104;
 const MXGDELIVER: u16 = 40108;
 const MXGCATCHER: u16 = 40110;
+const MXGFETCHER: u16 = 40113;
 const MXSTORAGE: u16 = 40114;
 const MXSTORAGE_DATA: u16 = 40115;
 const AUTH: u16 = 40190;
 const AUTH_DATA: u16 = 40191;
+/// `WAL_RINGEDGE_KEYCHIP_DECRYPT=<cipher rva>:<plain rva>:<length>` (hex): a check of the
+/// keychip's AES key the game carries both halves of, the cipher text and its plain text in the
+/// executable (Border Break Scramble: 3 blocks decrypted to "BorderBreak Copyright(C)SEGA All
+/// Rights Reserved", else the keychip unauthenticated, error index 1). `keychip.decrypt` of one
+/// of those 16-byte blocks answers its plain block (other values are echoed, as before).
+fn known_decrypt(value: &str) -> Option<String> {
+    let spec = std::env::var("WAL_RINGEDGE_KEYCHIP_DECRYPT").ok()?;
+    let mut parts = spec.split(':').map(|p| usize::from_str_radix(p.trim().trim_start_matches("0x"), 16).ok());
+    let (cipher, plain, len) = (parts.next()??, parts.next()??, parts.next()??);
+    let base = unsafe { windows_sys::Win32::System::LibraryLoader::GetModuleHandleW(std::ptr::null()) } as usize;
+    let block = (0..value.len() / 2).map(|i| u8::from_str_radix(value.get(i * 2..i * 2 + 2)?, 16).ok()).collect::<Option<Vec<u8>>>()?;
+    let (cipher, plain) = unsafe { (std::slice::from_raw_parts((base + cipher) as *const u8, len), std::slice::from_raw_parts((base + plain) as *const u8, len)) };
+    let at = cipher.chunks(16).position(|c| c == block.as_slice())?;
+    Some(plain[at * 16..(at * 16 + 16).min(len)].iter().map(|b| format!("{b:02X}")).collect())
+}
+
+/// The bytes the next connection to the keychip's data channel receives.
+static KEYCHIP_DATA: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
 /// `place.info`'s binary record (shop information), sent on the auth data channel: empty.
 const PLACE_INFO_SIZE: usize = 0xCE;
 
@@ -78,9 +98,16 @@ fn values() -> &'static HashMap<String, String> {
     static VALUES: OnceLock<HashMap<String, String>> = OnceLock::new();
     VALUES.get_or_init(|| {
         let mut map: HashMap<String, String> = DEFAULTS.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        // the keychip's network: the machine's (games compare their address with it)
+        // the keychip's network: the machine's (games compare their address with it); in hex,
+        // or dotted with `WAL_RINGEDGE_NETWORKADDR_DOTTED=1` (Project DIVA Arcade reads it with
+        // inet_addr: else none, ERROR 8001 network address error)
         if let Some(network) = local_address().map(|ip| u32::from(ip) & 0xFFFF_FF00) {
-            map.insert("keychip.appboot.networkaddr".into(), format!("{network:08X}"));
+            let value = if std::env::var("WAL_RINGEDGE_NETWORKADDR_DOTTED").is_ok_and(|v| v.trim() == "1") {
+                std::net::Ipv4Addr::from(network).to_string()
+            } else {
+                format!("{network:08X}")
+            };
+            map.insert("keychip.appboot.networkaddr".into(), value);
             log!("pcp: keychip network {}.{}.{}.0", network >> 24, (network >> 16) & 0xFF, (network >> 8) & 0xFF);
         }
         if let Ok(spec) = std::env::var("WAL_RINGEDGE_PCP") {
@@ -96,7 +123,7 @@ fn values() -> &'static HashMap<String, String> {
 
 /// The machine's IPv4 address (the default route's: a UDP socket "connected" outside, no
 /// packet sent).
-fn local_address() -> Option<std::net::Ipv4Addr> {
+pub(crate) fn local_address() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind(("0.0.0.0", 0)).ok()?;
     socket.connect(("192.0.2.1", 9)).ok()?;
     match socket.local_addr().ok()?.ip() {
@@ -119,6 +146,7 @@ pub(crate) fn start() {
         (MXKEYCHIP_DATA, "mxkeychip data"),
         (MXGDELIVER, "mxgdeliver"),
         (MXGCATCHER, "mxgcatcher"),
+        (MXGFETCHER, "mxgfetcher"),
         (MXSTORAGE, "mxstorage"),
         (MXSTORAGE_DATA, "mxstorage data"),
         (AUTH, "auth"),
@@ -146,6 +174,21 @@ fn serve(mut stream: TcpStream, name: &str, binary: bool) {
     let _ = stream.set_nodelay(true);
     log!("pcp: {name}: client connected");
     if binary {
+        // the data of the last binary keychip answer (`size=`), else nothing
+        let data = KEYCHIP_DATA.lock().unwrap().take();
+        if let Some(data) = data {
+            log!("pcp: {name}: {} bytes sent", data.len());
+            if stream.write_all(&data).is_err() {
+                return;
+            }
+            // the client acknowledges with `$` and waits for the close (else its transfer times
+            // out and amDongle marks the keychip unauthenticated)
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+            let mut ack = [0u8; 8];
+            let n = stream.read(&mut ack).unwrap_or(0);
+            log!("pcp: {name}: acknowledged {:02X?}, closed", &ack[..n]);
+            return;
+        }
         // data channel of the keychip's encrypt/decrypt requests: logged only
         let mut buf = [0u8; 512];
         while let Ok(n) = stream.read(&mut buf) {
@@ -224,7 +267,13 @@ fn answer(request: &str) -> String {
     let first = request.split('&').next().unwrap_or("");
     let (key, value) = first.split_once('=').unwrap_or((first, ""));
     if key == "mxmaster.foreground.next" {
-        let args = foreground_args(value.trim());
+        let mut args = foreground_args(value.trim());
+        // the application already running asked again: its exit, back to the game (Project
+        // DIVA Arcade's test menu, started with -t, asks for application 3 when left)
+        if !args.is_empty() && std::env::args().skip(1).collect::<Vec<_>>().join(" ") == args {
+            log!("pcp: application {value} is the one running: back to the game");
+            args.clear();
+        }
         log!("pcp: next application {value}: relaunch with '{args}'");
         wal_payload_common::request_relaunch(&args);
         // the cabinet's master ends the game for the next application: a game that stays
@@ -249,6 +298,43 @@ fn answer(request: &str) -> String {
     if key == "keychip.ds.compute" {
         return format!("{key}={}", ds_compute(request));
     }
+    // the trace log's restore (alpb's RestoreTraceLog, FUN_00a1b230): 3, nothing to restore (2
+    // restored, both accepted); `1` (the request's own value, echoed) means busy, the request sent
+    // again without end (Border Break: "INITIALIZING P-ras"), other values fail
+    if key == "keychip.tracedata.restore" {
+        return format!("{key}=3");
+    }
+    // the trace logs stored (the billing's accounting report, ARStepGetTraceData): none, the
+    // count and its `address` (both decimal, amDongle fails the answer without the address)
+    // a trace log sector's erase (after the billing server's traceerase=1): a result digit, 0
+    // done (the request's echoed sector number failed ARStepWaitEraseTraceLog)
+    if key == "keychip.tracedata.sectorerase" {
+        return format!("{key}=0");
+    }
+    // the free trace log entries (amDongleBillingTdGetFreeLogNum, decimal): plenty (0, a full log,
+    // failed alpb's FgTraceLogCheck, Error 21 ErrNo 8103)
+    if request.starts_with("keychip.tracedata.put=?") {
+        return format!("{key}=1000");
+    }
+    if key == "keychip.tracedata.get" {
+        return format!("{key}=0&address=0");
+    }
+    if key == "keychip.decrypt"
+        && let Some(plain) = known_decrypt(value)
+    {
+        return format!("{key}={plain}");
+    }
+    // the keychip's billing keys (amDongleBillingGetSignaturePubKey / GetCaCertification: Border
+    // Break Scramble's billing checks in with them): the size here, the bytes on the data channel
+    let data = match key {
+        "keychip.billing.signaturepubkey" => Some(wal_payload_common::pki::BILLING_PUB),
+        "keychip.billing.cacertification" => Some(wal_payload_common::pki::ca_cert()),
+        _ => None,
+    };
+    if let Some(data) = data {
+        *KEYCHIP_DATA.lock().unwrap() = Some(data.to_vec());
+        return format!("{key}=0&size={}&port={MXKEYCHIP_DATA}", data.len());
+    }
     if value != "?" {
         // a command (mxmaster.foreground.next=..., keychip.tracedata.put=...): acknowledged
         return format!("{key}={value}");
@@ -269,8 +355,15 @@ fn network_answer(request: &str) -> String {
     let name = request.split('&').find_map(|p| p.strip_prefix("request=")).unwrap_or("");
     let ip = local_address().unwrap_or(std::net::Ipv4Addr::new(192, 168, 0, 2));
     let o = ip.octets();
+    let gateway = format!("{}.{}.{}.1", o[0], o[1], o[2]);
+    // `WAL_RINGEDGE_NIC_STATUS=1`: the card's link up, its addresses in the same answer (amNetwork
+    // then asks no more; 0, the default: it asks each one, its request ending with code 2, which
+    // Project DIVA Arcade's ALL.Net client reads as no link, stuck at DHCP WAIT)
+    if name == "query_nic_status" && std::env::var("WAL_RINGEDGE_NIC_STATUS").is_ok_and(|v| v.trim() == "1") {
+        return format!("response={name}&result=success&status=1&ip_address={ip}&subnetmask=255.255.255.0&gateway={gateway}&primary_dns={gateway}&secondary_dns=0.0.0.0");
+    }
     let value = match name {
-        // 0: link up (another value: the game stops asking)
+        // 0: amNetwork asks the addresses one by one
         "query_nic_status" => Some(("status", "0".to_string())),
         // 0..4; 3: the address obtained (the game then asks for the card's state)
         "query_dhcp_status" => Some(("dhcp_status", "3".to_string())),
@@ -278,7 +371,7 @@ fn network_answer(request: &str) -> String {
         "query_subnetmask" => Some(("subnetmask", "255.255.255.0".to_string())),
         "query_gateway" | "query_primary_dns" => {
             let key = if name == "query_gateway" { "gateway" } else { "primary_dns" };
-            Some((key, format!("{}.{}.{}.1", o[0], o[1], o[2])))
+            Some((key, gateway))
         }
         "query_secondary_dns" => Some(("secondary_dns", "0.0.0.0".to_string())),
         "query_mac_address" => Some(("mac_address", "00:D0:F1:00:00:01".to_string())),
@@ -303,6 +396,11 @@ fn service_answer(request: &str) -> String {
             let id = values().get("keychip.appboot.gameid").map_or("", String::as_str);
             format!("response={name}&result=success&status=available&id={id}")
         }
+        // amGfetcher (Project DIVA Arcade): no download instruction, the game's data up to
+        // date
+        "get_status" => format!(
+            "response={name}&result=success&instruction_enable=0&dld_st=uptodate&deliver_version=0&release_time=0&order_time=0&work_time=0&work_version=0&patchb_time=0&patchb_version=0&patchb_status=0&patchf_time=0&patchf_version=0&patchf_status=0&auth_time=0&bbflag=0"
+        ),
         _ => format!("response={name}&result=success"),
     }
 }

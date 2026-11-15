@@ -6,6 +6,12 @@
 
 // the ABAAS game server (player data, rankings) of Sega's APM3 and ALLS games
 pub mod abaas_gs;
+// AimeDB, the Aime card database (the card's Aime id)
+#[cfg(windows)]
+pub mod aimedb;
+// ALL.Net's server (PowerOn), the connections to it
+#[cfg(windows)]
+pub mod allnet;
 // Sega Nu's AMEX board (JVS, DS, EEPROM, SRAM, GPIO) found by its device interface classes
 #[cfg(windows)]
 pub mod amex;
@@ -14,8 +20,13 @@ pub mod packed;
 // AVPro Video's uGUI display played by Unity's VideoPlayer (Android builds without AVPro's backend)
 #[cfg(windows)]
 pub mod avpro;
+// the cabinet's clock: Japan's time zone, never set (Sega's platform)
+#[cfg(windows)]
+pub mod clock;
 #[cfg(windows)]
 pub mod codepage;
+#[cfg(windows)]
+pub mod cg_cache;
 #[cfg(windows)]
 pub mod crash;
 #[cfg(windows)]
@@ -24,8 +35,14 @@ pub mod memdiff;
 pub mod crypto;
 #[cfg(windows)]
 pub mod bezel;
+// the Sinfonia CHC-C310 card printer (chcusb / fwdlusb libraries)
 #[cfg(windows)]
-pub(crate) mod border;
+pub mod chcusb;
+// ALL.Net's billing server (TLS, its dummy PKI)
+#[cfg(windows)]
+pub mod billing;
+#[cfg(windows)]
+pub mod border;
 #[cfg(windows)]
 mod border_d3d11;
 #[cfg(windows)]
@@ -36,6 +53,9 @@ pub mod crosshair;
 pub mod d3d9_quads;
 pub mod d3dx;
 pub mod desktop;
+// the cabinet's DNS: the store's router and ALL.Net's hosts, the virtual router
+#[cfg(windows)]
+pub mod dns;
 pub mod dxgi_size;
 #[cfg(windows)]
 mod crypto_keys;
@@ -57,6 +77,9 @@ pub mod dshow;
 pub mod exe_env;
 #[cfg(windows)]
 pub mod glview;
+// NVIDIA-only OpenGL (bindless, command lists) on other GPUs
+#[cfg(windows)]
+pub mod nvgl;
 #[cfg(windows)]
 pub(crate) mod late_hooks;
 // where the players' guns point in the game's window
@@ -90,6 +113,22 @@ pub mod nesica_registry;
 pub mod paths;
 #[cfg(windows)]
 pub mod patches;
+// the keychip's dummy billing PKI (segatools', public domain)
+pub mod pki;
+// Sega's 837-15093 / 837-15070 LED boards
+#[cfg(windows)]
+pub mod led;
+// Sega's 837-15345 RFID deck reader
+#[cfg(windows)]
+pub mod deck;
+// the serial ports in the SetupDi device enumeration
+#[cfg(windows)]
+pub mod comports;
+// the 3M MicroTouch multi-touch serial controller
+#[cfg(windows)]
+pub mod touch3m;
+// the cabinet's image information (E:\ICF1, ICF2)
+pub mod icf;
 // images (elevator doors, a bezel) over Direct3D 11 pictures
 #[cfg(windows)]
 pub mod images_d3d11;
@@ -179,6 +218,8 @@ pub fn start(name: &'static str) {
             // before the X11 driver starts (its first window or screen query)
             desktop::unmanaged();
             crash::dump_threads_at();
+            #[cfg(target_arch = "x86_64")]
+            crash::hw_breaks();
             #[cfg(target_arch = "x86")]
             crash::trace_exit();
             dshow::init();
@@ -194,6 +235,7 @@ pub fn start(name: &'static str) {
             sdl::init();
             codepage::init();
             d3dx::init();
+            cg_cache::init();
             dinput::init();
             ini::init();
             mouse_stick::init();

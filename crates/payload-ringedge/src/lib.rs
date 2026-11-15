@@ -13,23 +13,31 @@
 //!   (`WAL_RINGEDGE_MICROTOUCH`, `microtouch.rs`); the game's Windows mouse from player 1's
 //!   pointer (`WAL_RINGEDGE_MOUSE`, `mouse.rs`).
 //! * Medal cabinet boards: Medal no Gunman's (`gunman.rs`), Lady Luck's (`satellite.rs`).
-//! * Profile code patches (`WAL_PATCHES`); `WAL_RINGEDGE_CWD`: the game's working directory,
+//! * Profile code patches (`WAL_PATCHES`), free play ones (`WAL_RINGEDGE_FREEPLAY_PATCHES`, with
+//!   the common free play option); `WAL_RINGEDGE_CWD`: the game's working directory,
 //!   relative to its own.
 
 #![allow(non_snake_case)]
 
 mod amlog;
+mod bbserver;
 mod card;
 mod cg;
 mod devices;
+mod diva;
+mod divaserver;
+mod elo;
 mod ffb;
 mod happy_playground;
+mod iccard;
 mod glscale;
 mod gunman;
+mod lamp;
 mod microtouch;
 mod mouse;
 mod nvasm;
 mod pcp;
+mod rawmouse;
 mod rfid;
 mod satellite;
 mod touch;
@@ -64,12 +72,24 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
             log!("ringedge: offline cabinet");
             patches::apply_list(&list);
         }
+        // the common free play option (WAL_RINGEDGE_FREEPLAY, else WAL_FREEPLAY): the game's own
+        // free play check patched (WAL_RINGEDGE_FREEPLAY_PATCHES, the WAL_PATCHES format)
+        if wal_payload_common::free_play("WAL_RINGEDGE_FREEPLAY") == Some(true)
+            && let Ok(list) = std::env::var("WAL_RINGEDGE_FREEPLAY_PATCHES")
+        {
+            log!("ringedge: free play");
+            patches::apply_list(&list);
+        }
         amlog::init();
         // JVS sense line: amJvs reads DSR (0x20) as "board addressed"
         serial::MODEM_STATUS[0].store(0x10, Ordering::Relaxed);
         serial::MODEM_STATUS[1].store(0x30, Ordering::Relaxed);
         wal_payload_common::jvs_board::init("mxjvs");
         happy_playground::init();
+        // Border Break Scramble's IC card reader/writer (`WAL_RINGEDGE_IC_CARD`)
+        iccard::init();
+        // Border Break Scramble's aim control, a raw input mouse (`WAL_RINGEDGE_RAW_MOUSE`)
+        rawmouse::init();
         // ports the game opens beside its I/O board, present but silent
         if let Ok(ports) = std::env::var("WAL_RINGEDGE_SILENT_PORTS") {
             serial::install_sink(&ports);
@@ -83,6 +103,13 @@ pub extern "system" fn DllMain(_module: HINSTANCE, reason: u32, _reserved: *mut 
         satellite::init();
         microtouch::init();
         mouse::init();
+        // Project DIVA Arcade's network, Aime reader (WAL_RINGEDGE_DIVA=1), touch panel and lamp
+        // control board
+        diva::init();
+        elo::init();
+        lamp::init();
+        // the serial ports the SetupDi enumeration lists (WAL_RINGEDGE_COMPORTS)
+        wal_payload_common::comports::init();
         // the touch pointer of the touch screen games (the common crosshair option, `WAL_CROSSHAIR`)
         wal_payload_common::crosshair::init();
         pcp::start();

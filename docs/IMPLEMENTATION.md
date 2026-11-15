@@ -2432,6 +2432,81 @@ System `europar` (also `segaeuropa-r`), payload `wal_europar.dll` installed as `
   0x1020, low nibble `15 - |force| * 15` (at least 1; 15 none), bit 0x10 a negative force. A
   deliberate crash at boot (`0x5ab9e5`, `*(0) = 0` when a cabinet flag is clear) is skipped.
   XInput pads are hidden (its xinput1_3 ordinals 2-4 point at the payload's "no pad").
+- **Daytona Championship USA (2017) and its New Season Edition (2018).** `Daytona/Daytona.exe`
+  (`Sega/Daytona/` for the New Season), Direct3D 11, 32-bit, beside the Sega Shell
+  (`shell/Shell.exe`). It imports no DLL of ours: `payload_loader` (wal-loader). The first
+  dump's `Daytona.exe` is a modified copy: the profile installs its original `bkp.exe` in its
+  place. Its dump's `dinput8.dll` is not Microsoft's (`hide`).
+  - *Crash at boot (`qcap`).* The game's photo camera (OpenCV through DirectShow video capture)
+    opens the host's webcam through Wine's qcap; its sample grabber corrupts the game's heap a
+    few seconds after start (an access violation in its allocator, `0x69xxxx`, a different
+    thread each time, `GameData/config.ini` `ENABLE_CAPTURE` changes nothing): `dll_overrides:
+    qcap: ""`, the game plays without a camera.
+  - *Shader cache.* "データ初期化中" at the first boot is the game compiling its HLSL into
+    `GameData/.shaders/shader_cache.bin` with the dump's `d3dcompiler_46.dll` (Wine's refuses
+    its shaders, E5000 / E5018, and the game quits); a boot killed during it leaves a broken
+    cache that crashes every later boot (restore it from the dump).
+  - *Shell (`shell_tcp.rs`, `WAL_EUROPAR_SHELL_TCP=18888`).* The game connects once at start
+    (`soc::ShellCommImpl`, `0x582930`) to 127.0.0.1:18888: messages `"DYT"`, the number (u16
+    big-endian), the data length (u16 big-endian), 4 zero bytes, the data (names table
+    `0x152fbc0`: 0..43 game -> shell, 44..51 shell -> game). The payload's server sends the
+    credit count (45, 1 byte; not before the game's 2 assets loaded / 3 attract start: a count
+    at its start corrupts its heap), takes one per game started (6) unless free play (99), and
+    answers each security challenge (42, 4 bytes every 10 s) with 46. Its check (`0x582500`,
+    stdcall, a scramble of the answer compared with the challenge; more than 4 failures stop
+    the game, `0x5b9470`) accepts any answer (`WAL_PATCHES`, `mov al,1; ret 8`; the New Season's
+    at `0x584600`). The New Season waits for the cabinet SKU (44, handler `0x5844e1`, any data)
+    before it starts (`0x4dd18b`, "NETWORK DISCOVERY"): sent when the game says it is launched (1).
+  - *I/O board.* The common fake wheel "SEGA IO Controller" (`0x47cdf0`, `0x5d9bb0`): X the
+    wheel, Rx the gas, Z the brake (-1000..1000), the buttons through the table of its first
+    reader (`0x1584220`, config `0x115c810`) to the switch bits (`0x5b61c0`): 0 START, 1 / 2 /
+    6 / 7 the H shifter's gears 1-4 (bits 7-10, held in `0x19b468c`), 3 / 4 shift up / down
+    (bits 14 / 13, edges), 8-11 VR 1-4 (the views). Manual cars are offered at car select (steer)
+    but the race stays automatic: not found yet (property `0x540027`, forced to 1 by the
+    settings object `0x1628c78` +0x2a).
+  - *Force feedback (`inpwrapper.rs`, `WAL_EUROPAR_INPWRAPPER=1`).* The game starts
+    `c:\sega\shell\InpWrapper.exe -h=<its window> -p=<port>` (`0x528b70`), which registers with
+    a `WM_COPYDATA` (`dwData` 3, its window, `0x4dcd90`); the game then sends it each parallel
+    port byte (`dwData` 0x20, `0x529570`, again until the answer is 1). The payload does not
+    start the program and plays its window: `port_ffb` format `daytona`, the force in the low
+    nibble (15 strongest), bit 0x10 to the right, two close values alternated for a texture.
+- **Men In Black (2022).** `MIB.exe`, Unity 2020.3 Mono, 64-bit, a two-gun ticket game:
+  `wal_europar64.dll` (the system's 64-bit payload) loaded at the entry point by wal-loader64
+  (`payload_loader`), `WAL_EUROPAR_BOARD=mib` (`mib.rs`, `shell_mib.rs`). The image holds the
+  cabinet's files only: a community pack's Unity Doorstop (`winhttp.dll`), BepInEx with its
+  DemulShooter plugin and `MIB_ServiceMenu.exe` (a settings editor) removed.
+  - *Shell (`shell_mib.rs`).* `MIB.MIBClient` connects to 127.0.0.1:18888 and quits while not
+    connected. Messages: `"MIB"`, the operation (u16 big-endian), the data length (u16
+    big-endian), a sequence number (u32 big-endian), the data; each acknowledged (1, its
+    sequence number). The payload's server sends the credit count (66: player 0, count, part
+    credit, maximum) at launch (101) and per coin (both players' coins in the common count),
+    takes one per player started (301) unless free play, and answers each security challenge
+    (6, 4 bytes every 10 s; more than 4 unanswered and the game quits) with 67: the 4 bytes
+    whose `MIBCore.AuthenticatedData` scramble (an xor, 12 rounds of a keyed left shift with a
+    parity bit, a bit reversal, two xors) gives the challenge, each round undone by trying the
+    first byte's lost top bit.
+  - *Settings.* `C:\Sega\ShellData\ShellData.ini` (`[Credit]` free play and costs, the guns'
+    calibration, `MIBCore.SetCalibration`) and `GameSettings.ini` (`MIBGameSettings`): the
+    profile's copies (`c_folders` `Sega/ShellData`, `files`): the calibration 0-4096 unclamped
+    on both guns (axis -1..1 over the whole screen), `SWIPE CARD TO PLAY=OFF` (coins, not the
+    card reader). The payload writes `[Credit] Freeplay` (`WAL_EUROPAR_FREEPLAY`, else
+    `WAL_FREEPLAY`) before the game reads it.
+  - *Guns.* The board is one Unity joystick (InputManager: `X Axis0` / `Y Axis0` axes 0 / 1,
+    `X Axis1` / `Y Axis1` axes 3 / 2, inverted; buttons 5 / 6 `PlayerStart1` / `2`, 7 / 9 the
+    triggers), and `MIBCore.Update` takes no input while a joystick has a name. Unity 2020 reads
+    joysticks through raw input and HID: UnityPlayer's `GetProcAddress` of
+    `mono_add_internal_call` returns the payload's wrapper, which registers its own
+    `UnityEngine.Input::GetAxis` / `GetAxisRaw` (the players' guns, `1 - 2 * x` from the
+    picture's top left, kept while off screen), `GetButton` / `GetButtonDown` / `GetButtonUp`
+    (triggers, starts; edges per frame from `Time::get_frameCount`), `GetJoystickNames` (the
+    names emptied) and `GetKey*` / `GetMouseButton*` (nothing pressed: Escape skips a boss).
+    The game draws its own crosshairs. Free play: a start sets `CreditsUI.TakingCredit` until a
+    lower credit count arrives, which free play ignores (the second player could not join):
+    in free play the payload clears it when a start is pressed (`MIBCore.Instance
+    .CreditsController`, through Mono's embedding API on the game's main thread).
+  - *Lamps.* `RS232` opens the first port of `SerialPort.GetPortNames` at 19200 baud (lamp
+    bytes): Mono's `RegOpenKeyExW` of `HARDWARE\DEVICEMAP\SERIALCOMM` fails (no port listed:
+    Batocera's serial ports and Sinden guns untouched).
 
 ### 6.3h Konami e-Amusement PC (`crates/payload-konami`)
 
@@ -3946,7 +4021,8 @@ settings and the guns' calibration, identity; `AcountData.db`, `RankData.db`) on
   fine, 20..23 menu, OK, up, down: Wisdom Zombies reads up and down the other way, its
   profile's `native_map`), 8 axes (x, y per player, big endian, 0..4094, y up), tickets left
   (0), coins since the last frame. The PC's frames (lamps, motors, tickets) are ignored.
-- **Crosshair.** The games draw no gun cursor in play: the common option (Direct3D 11).
+- **Crosshair.** The games draw no gun cursor in play: the common option (Direct3D 11), each
+  player's in its color (2 blue, 3 green, 4 yellow) while its gun moves.
 - **Maps.** The map select unlocks the maps as the player passes them
   (`SelectMapManager.ShowPassLevel`: `OpenLocked(1..4)`): the dumps' assemblies open all of them
   (each call's `ldc.i4.1/2/3` patched to `ldc.i4.4`; file offsets: Mech Dinosaur 0x5977B,
@@ -4430,18 +4506,33 @@ buttons and a start button. The payload is loaded at the entry point (`payload_l
   `in` / `out` instructions are already NOPs and its dgVoodoo `Glide2x.dll` imports
   `cob_patch.dll`, which hooks the reader with the real keyboard; the payload's jump replaces
   either.
-- **Picture.** The runner's gxvk (`Glide2x.dll` in the profile's `files`, `useMonitorResolution`,
-  no logo) in place of the dump's dgVoodoo 2.53: always windowed at 640x480 (resized again every
-  2 s through calls resolved at run time), its full screen stretched to the screen; dgVoodoo
-  2.87 hangs at boot under Wine, its "Wine fix" build loses the large sprites and the texts.
-  gxvk 0.1 drew the sprites' chroma key (magenta boxes) and lost black texels: the runner has a
-  later build (`v0.2-WIP-6-gc6d68eae`). The game hands `grSstWinOpen` no window and runs no
-  message loop: gxvk took its 0x0 window (a few pixels on the desktop) and the picture went
-  black once gxvk needed its window's messages. As for Xtom 3D, `grSstWinOpen` gets a window of
-  the payload (the largest centered 4:3 rectangle of the screen, a thread and message loop of
-  its own, gxvk's `SetWindowPos` / `MoveWindow` keep it there), the game's hidden, the black
-  bezel around. The window's WM_MOVE no longer closes the game (`0x4121bc`: on a failed
-  `grSstControl(move)`, dgVoodoo's).
+- **Picture.** The dump's dgVoodoo 2.53 (`Glide2x.dll`, Direct3D 11 on DXVK, MPRESS-packed:
+  its unpacker resolves its `user32` calls) keeps its own window (`WAL_ARCADEPC_GLIDE_WINDOW=0`):
+  always windowed, it moved the game's window to 640x480 at 0,0 every 2 s (`SetWindowPos`), out
+  of reach of the import hooks (Wine's `SetWindowPos` has no hot patch prologue). The payload
+  replaces the pointers to `SetWindowPos` / `MoveWindow` in dgVoodoo's unpacked image: each of
+  its sizings lands on the largest centered 4:3 rectangle of the screen, where the window is
+  created (`WAL_WINDOW_SIZE=aspect`, `WAL_WINDOW_POPUP`, `WAL_PACKED_IMPORTS=user32.dll` for the
+  hot-patchable `CreateWindowEx`), its 640x480 picture stretched into it by DXGI, no display mode
+  change (`WAL_NO_MODE_CHANGE`), the black bezel around, the window not managed (GNOME's top bar
+  pushed it 48 pixels down). Its `dgVoodoo.conf` byte 0x1c (0: full screen) stretched the
+  picture to the screen's 16:9. gxvk (the runner's, `v0.2-WIP-6-gc6d68eae`), used before,
+  showed the intro black: the logo animation is drawn with a constant alpha of 0
+  (`grConstantColorValue(0x00ffffff)`, alpha combine = constant), irrelevant to a Voodoo (no
+  alpha in its frame buffer) but presented by gxvk (a present with alpha forced to 1 showed it).
+  The game hands `grSstWinOpen` no window and runs no message loop: for gxvk (the payload's
+  default) `grSstWinOpen` gets a window of the payload (that rectangle, a thread and message
+  loop of its own, as for Xtom 3D), the game's hidden. dgVoodoo 2.87 hangs at boot under Wine,
+  its "Wine fix" build loses the large sprites and the texts. The window's WM_MOVE no longer
+  closes the game (`0x4121bc`: on a failed `grSstControl(move)`, dgVoodoo's).
+- **Frame timer.** `0x411550` keeps a time budget (`0x512804`, float ms): started from
+  `timeGetTime` when 0 (`0x411540`), it adds `GetTickCount` minus that start, an unsigned 32-bit
+  difference (`0x4114d0`); each logic frame takes 16.67 ms, the picture is drawn once the budget
+  is spent. Under Wine `GetTickCount` steps every ~16 ms while `timeGetTime` is precise: a start
+  ahead of the next tick made the difference ~4.29e9 ms and the game ran logic frames without
+  drawing (~330000 board reads a second): the attract's title never shown after the intro,
+  black until a start (a texture load resets the budget), by chance of the timing. The game's
+  `GetTickCount` is `timeGetTime` (the payload's import hook).
 - **Operator menu.** Test moves, service selects. The menu's select and the frame update (service:
   a credit) shared one edge detector (`0x4112f0`, its state flipped at each call while held): the
   frame update, called first, took a short press, only a long one selected. The menu's call
@@ -5293,7 +5384,8 @@ instead. `.windowsloader`: `Shooter.exe`. Board `marssortie` (`marssortie.rs`):
   `GameData.DisplayHairCross` (the game's own crosses); the players' photos are the
   game's (its webcam when present, blank photos without one: both work). The Sinden lightguns'
   cameras are hidden from its webcams (`webcam::skip_sinden`, payload-common: the DirectShow
-  device list's `IEnumMoniker::Next` skips a `FriendlyName` containing "sinden"): the game takes
+  device list's `IEnumMoniker::Next` skips a `FriendlyName` containing "sinden", hooked in the
+  game's modules, the DLLs of its directory loaded later too: Unity's `UnityPlayer.dll`): the game takes
   the first webcam, on the box a gun's (held by the Sinden software).
 - **Crosshairs of the players only.** The game shows every station's cross (`HairCrossManager`),
   and with free play (price 0) every station plays from a stage's start: `HairCrossManager.Update`
@@ -5467,7 +5559,20 @@ loaded at the entry point (`payload_loader`; `xinput1_4` off, `xinput1_3` the pa
 - **Free play** (the common `WAL_FREEPLAY`): the game's `Settings\GameData.ini` (UTF-16)
   `Coin_Rate` (coins per credit, 0 its free play), written at start: 0, or 1 when free play is
   off and it was 0.
-- The photo screen ("Let's take your picture") times out without a webcam.
+- **Service period** (`Player.xyGameEncryptionHelper`, the operator's rental licence):
+  `ServiceTime`, the days left, read at start from the game's Easy Save data (PlayerPrefs, AES;
+  absent from the dump: 0) less the days since the last start. 0 shows the error 802 ("Device
+  Error, Please contact Salesperson") over the attract and checks the licence dongle's SN
+  (`Slm_an_Pass` false without it). The payload keeps `ServiceTime` 0xffff (a sold machine:
+  "Effective Day: Normal", no dongle check) and `Slm_an_Pass` true, at each board read (every
+  20 ms, IL2CPP's `il2cpp_field_static_set_value`: `Il2Cpp::set_static`).
+- **4G modem** (`xyspmodule4g.dll`, the game's online link): it looks for a USB serial port
+  (SetupAPI's "Ports" devices named `USB ... (COMn)`) and sends it AT commands: its
+  `CreateFileA` is hooked when the game resolves its exports, COM ports absent (on Batocera the
+  Sinden guns' `/dev/ttyACM*` are such ports, COM33 and COM34).
+- **Camera** (`MyWebCamera`, Unity's `WebCamTexture`, the players' photos): the Sinden guns'
+  cameras hidden (`webcam::skip_sinden`), their pictures held by the Sinden software. The photo
+  screen ("Let's take your picture") times out without a webcam.
 - Verified headless (2026-11-12): attract, board connected (no COM error, 5 boots of 5), free
   play start to track select, coins with free play off (a coin starts), the operator menu.
 - The user: 100% (2026-11-12, desktop).
@@ -5491,7 +5596,7 @@ uninstaller removed). `.windowsloader`: `SEGA RALLY 2.EXE`. A PC game, not a cab
   with the repack's settings in a 2.79.3 `dgVoodoo.conf` (it rejects the repack's 0x287 file:
   watermark, no 1067x600 mode; and its own `high_quality` dithering, `auto` render format),
   rendered at the screen's size with 4x antialiasing. ReShade (`dxgi.dll`) is hidden.
-- **Aspect ratio** (`WAL_SR2_ASPECT`, the GUI's Game option, 16:9 by default, or 4:3): the
+- **Aspect ratio** (`WAL_SR2_ASPECT`, the GUI's Game option, `16_9` by default, or `4_3`: no colon, a file name on the box): the
   widescreen fix reads `SegaRally2Resolution.cfg`'s `Aspect ratio=` (3: 1067x600, 1: 800x600)
   in its `DllMain`, before the payload: the profile's `files` source is chosen by the option
   (`SegaRally2Resolution-{WAL_SR2_ASPECT}.cfg`; the launcher expands `{WAL_...}` in `files`
@@ -5798,6 +5903,37 @@ entry point (`payload_loader`), the game's window messages filtered:
   the first stage (moves, shots), the test menu (input test, system configuration, income
   data), free play on and off.
 - The user: 100% (2026-11-12, desktop).
+
+#### Radikal Bikers
+
+Gaelco's pizza delivery motorbike game (1998), the community Windows emulator of its Gaelco 3D
+board (`radikalb.exe` 0.9: a 68EC020 core, Direct3D 8, 32-bit; the ROMs in `radikalb.zip`,
+the settings and the board's EEPROM in `radikalb.dat`). `.windowsloader`: `radikalb.exe`.
+Board `radikalbikers` (`radikalbikers.rs`), loaded at the entry point (`payload_loader`):
+
+- **Setup dialog.** The emulator first shows a dialog (controller keyboard / mouse, windowed,
+  full-screen mode; Cancel quits). The payload answers its `DialogBoxParamA` with OK without
+  showing it and sets the window: windowed, its back buffer the centered 4:3 rectangle of the
+  screen (1440x1080 on 1920x1080; 576x432 by default, the board's picture), the profile's
+  borderless popup on that rectangle.
+- **Inputs.** The emulator's per-frame reader (0x4027e0: `GetAsyncKeyState` into the board's
+  active low input bytes, the handlebar's ADC from the arrows or the mouse) is replaced by a
+  `jmp` to the payload's: accelerator, brake, handlebar up, view, start, coin, service coin,
+  test from the virtual stick, the handlebar (0x10..0xf0) the left stick, the pads' triggers
+  the pedals. The real keyboard and mouse are filtered.
+- **Free play** (the common `WAL_FREEPLAY`, on by default): the game has none (its GAME
+  ASSIGNMENTS take 1 to 8 coins a credit). A start press out of a game without credits (the
+  68020's work RAM: game state 0x755c53b, 0 in the attract and its demo race, 2 from a few
+  seconds after the start to GAME OVER; credits 0x755eb0c) inserts a coin first, then presses
+  start; no other coin until that game is over (the circuit select's confirm is a start press
+  too). A continue takes a coin. Off: coins as the GAME ASSIGNMENTS set.
+- **Saves.** The emulator writes `radikalb.dat` (operator settings, bookkeeping, records)
+  only on `WM_QUIT` (0x401420); the launcher stops the process. The payload calls that writer
+  each time the block changes.
+- Verified headless (2026-11-14): boot (version 2.02, RAM OK), attract, coins (CREDITS: 2),
+  start, circuit and biker select, a race (accelerating, steering both ways), time out,
+  CONTINUE?, GAME OVER, the test menu (input test, game assignments, handle adjust,
+  bookkeeping kept across runs), free play over two games.
 
 ### 6.3j UNIS (`crates/payload-unis`)
 
@@ -7495,6 +7631,47 @@ Mario & Sonic at the Tokyo 2020 Olympic Games Arcade (SDFV, 64-bit, portrait). s
     is `\r\n`: its parser skips a header line, then reads past an empty text (boot hang one time
     out of two).
 
+- Wonderland Wars (SDAP 5.36, Nu 1.1 `AAV0`, `package\bin\carol_nu.exe`, 32-bit Direct3D 9 with
+  NVIDIA's Cg runtime; `wonderland-wars`, `WAL_ALLS_BOARD=wlw`, `wlw.rs`): amLib linked in, no
+  amdaemon, as CHUNITHM (`daemon.rs` in the game; `aimeReaderHost.exe -p10 -n` started first, the
+  Aime reader 837-15286 on COM10 in it). segatools' carolhook (public domain) as the reference
+  for the boards.
+  - amVideo: the game's amLib loads the `amVideo\name` library (the payload) and takes its
+    functions by ordinal (1 open, 2 close, 3 set resolution, 4 video BIOS version: 0x25358bb):
+    `crates/payload-alls/amvideo.def` gives them those ordinals (DllMain was ordinal 1, called as
+    open: a jump to 1 at boot). amdaemon finds them by name.
+  - COM1: the 3M MicroTouch controller (`\x01` command `\r` answered `\x010\r`, `NM` / `OI` /
+    `UT` its name and type), then a report stream (10 touches of 6 bytes: status 0x80, 0x40 while
+    touching; X and Y in 7-bit halves over 0..16383, Y from the bottom). The pen: the touch
+    surface, else the mouse / gun with `b1`. The common crosshair follows it
+    (`WAL_CROSSHAIR_AXES=touch`, new: the touch surface's first finger, kept once lifted until the
+    stick moves).
+  - COM12: the 837-15312 pen controller board (`E0` frames, the sum from the destination; board
+    info `15312   ` / `6699 ` revision 0x90, firmware sum 0x361b). The game first runs
+    `15312firm\firmupdate_1113.exe -COM:12 -FirmUpdate ...` and opens the board after its exit
+    code 0 or 1 (the table at 0xefb8cc): replaced by `cmd.exe /c exit 0`. Polling (0x81 per
+    request): pen button `b2` (bit 0), dodge `b3` (bit 1) at byte 10, the lever's X / Y signed at bytes 18 /
+    19 (Y up positive). The game checks the status bytes of the previous answer it kept (bytes 7:
+    bits 0-1 set, 8: bit 1 clear), none before the first: its first board initialization always
+    fails, the second one plays (the real board's too). COM11: the 837-15070 LED board (`led.rs`).
+  - DIP switch 1: the store's server cabinet (else error 3007). Free play: amLib's credit record
+    (`chuni::set_free_play`) at start and in the game's writes.
+  - Network: its server list `<ALL.Net uri>:80/carol/service/servers.cgi` (WinINet
+    `InternetOpenUrlA`) answered at once with an empty `200 OK` by the payload (127.0.0.1:
+    `WAL_PORT`+110; the router's address is absent from the network: a TCP timeout, then the list
+    asked again every 9 s). No game server (database DtFront, matching Sphingo): guest play only,
+    Aime refused offline by the game. The network test's database, matching and game server checks
+    wait 1350 frames each for their connection flag (0x1390bd0, 0x1390c40, 0x1390ce0): 60 frames
+    (`WAL_PATCHES`). `gethostbyname` (ws2 ordinal 52, `netenv.rs`) answers the network's names as
+    `DnsQuery` does.
+  - Shaders: about 9700 vertex and pixel programs compiled with `cgCreateProgram` at each boot
+    (10 minutes): payload-common's `cg_cache.rs` (`WAL_CG_CACHE=Y:\cgcache`, new) keeps the
+    compiled assembly per program (21947 files, 212 MB; the key's SHA-256 names and checks each),
+    a fake program serving it. Loading them back still takes about 2 minutes (not the assembling:
+    caching `D3DXAssembleShader` too gained nothing). DXVK's SM3 compiler asserts on its shaders
+    (`sm3_io_map.cpp:880`, as CHUNITHM): wined3d (`dxvk: false`). Its fullscreen device ends the
+    game when it loses the focus: windowed 1920x1080 in a borderless screen window, 16:9.
+
 - CHUNITHM SUPERSTAR (SDGS 1.00.00, international, ALLS `ACA1`; `chunithm-superstar`): WORK IN
   PROGRESS, not running. amdaemon (64-bit, `App\amdaemon`, game.bat's `pushd amdaemon`) runs the
   IO4 board (`WAL_ALLS_BOARD=chusan`: the air sensors on players 1 / 2 bits 13, 12, 11, `chuni::hand`)
@@ -8036,6 +8213,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `chunithm-crystal-plus` | CHUNITHM CRYSTAL PLUS | alls | headless tests (2026-11-12): attract, free play, card login, registration, trial play, name entry, tutorial; with SEGAguide's unpacked executables (the dump's are protected) | as CHUNITHM PARADISE LOST, title uri `/SDBT/145/` |
 | `chunithm-paradise-lost` | CHUNITHM PARADISE LOST | alls | headless tests (2026-11-10): title server, card login, tutorial with the slider; with SEGAguide's unpacked executables (the dump's are protected) | as CHUNITHM STAR, title uri `/SDBT/150/` |
 | `crossbeats-rev-sunrise` | crossbeats REV. SUNRiSE | alls | user (2026-11-12): "the game seem to work perfectly" (mouse touch, red dot, Aime login with PIN, profile load); headless tests: boot, ALL.Net, game server tables, coins, touch, card sign-up | Nu 1.1 without amdaemon (§6.3l, `WAL_ALLS_BOARD=cxb`): CommIo / CommLamp exports, WM_TOUCH, TN32 Aime reader COM12, options after 0060, billing type 0, ARTEMiS game server (WinHTTP body order fix) |
+| `wonderland-wars` | Wonderland Wars | alls | user (2026-11-13, desktop): boots, touchpad pen OK, guest play; headless: power-on and network tests, shader cache | Nu 1.1 without amdaemon (§6.3l, `WAL_ALLS_BOARD=wlw`): 3M touch COM1, 837-15312 pen board COM12, amVideo ordinals, Cg shader cache, server checks shortened; offline (no game server): guest only |
 | `chunithm-superstar` | CHUNITHM SUPERSTAR | alls | not running (2026-11-09): protected executables, amdaemon dies under Wine (direct system calls) | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=chusan`): profile, IO4 air sensors, slider, LED boards, title server ready |
 | `teratoma` | Teratoma: The Last Rebellion | ringedge | works (user: 100%) | Skonec 2014 lightgun game on the Operation G.H.O.S.T. engine (amLib, gs2.ini, game id `SBWA`, RingWide platform AAM). `TT.exe` is packed: `wal-loader` (`WAL_LOADER_TERATOMA`, `crates/loader/src/teratoma.rs`, SHA-256 checked) runs the unpacker past its checks and loads the payload from the game's startup call. Its code calls the system through the packer's stubs: `WAL_PACKED_IMPORTS=kernel32.dll,setupapi.dll,d3d9.dll` hot patches kernelbase's functions (setupapi's and d3d9's: the unpacked import table's pointers). Its 1280x720 fullscreen device (no such mode on a 1600x1200 Xorg screen) made a 1280x720 back buffer in a borderless screen-sized window, stretched (`WAL_D3D9_WINDOWED_SIZE`, `WAL_WINDOW_POPUP`, `WAL_WINDOW_SIZE`). The dump's `root/lua/Sound/Sound.lua` wraps the game's (music and gun shot at 0.25, dialogue doubled): the game's own script, extracted from it, put back (`files`). The dump's gs2.ini (PC mouse mode) replaced by a profile file with `EnableAMLib`, `EnableJvs`, `GunController` on: amLib's JVS on `mxjvs`, the game's own JVS reader (guns, buttons, coins) on the first COM port Windows lists (`COM*`), an overlapped reader (`WaitCommEvent`, reads armed after each reply: `WAL_SERIAL_PENDING_READS`, replies 2 ms after the write's completion, else polled 5 times a second). Test menu: F2 sets `root/TestMode.sac` and asks amMaster for the next application, it stays: the payload ends it after 2 s, the launcher starts it again. The protector's watchdog threads end the game about a minute into a level (`TerminateProcess` from +0x28162a6, not every run): ignored (`WAL_IGNORE_TERMINATE_FROM`). `logo.avi` and the promo movie are WMV2 re-encodes in the dump; the in-game movies WMV3 |
 | `chaos-code-ringwide` | Chaos Code (RingWide) | ringedge | works (user: 100%) | RingWide boards in the RingEdge payload |
@@ -8056,6 +8234,9 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `sega-rally-3` | SEGA Rally 3 | europar | works (user: 100%) | `Rally/Rally.exe`, payload as `xinput1_3.dll` (native override; `inpout32.dll` loaded at run time = the payload): HID board vendor 0x1043 (wheel, gas, brake, shift up/down, handbrake, view, start), force feedback port 0x1020, credits counted in the game (coin = 1 credit, free play option), 1280x720 or 1920x1080 (in-race texts recentered) |
 | `showdown` | Showdown | segashell | works (user: 100%) | `Showdown/Showdown.exe` (§6.3e), Rapture3D 2.7.4 DLLs in the dump, the Shell's DSW protocol (cabinet configuration, credits, free play option), fake DirectInput "SEGA IO Controller" (wheel, pedals, start, view, boost, reset, music), parallel port force feedback (0x378), Shell paths and settings patched, PC inputs hidden |
 | `grid` | GRID | europar | works (user: 100%) | `Sega/Grid/GRID.exe`, payload as `inpout32.dll`: its board a fake DirectInput "SEGA IO Controller" (wheel X, brake Z, gas Rx, start, view, reset, gears, look back), the Sega Shell window on its command line (`/h=`, coins, credits), force feedback port 0x1020, boot crash skipped, XInput hidden |
+| `daytona-championship-usa` | Daytona Championship USA | europar | works (user: 100%); the manual gearbox not engaged (the race in automatic) | `Daytona/Daytona.exe` (the dump's original `bkp.exe`), wal-loader: fake DirectInput "SEGA IO Controller" (wheel, gas, brake, start, shift up/down, H gears, views), the Sega Shell over TCP 18888 (credits, free play, security answers), InpWrapper force feedback, Wine's qcap disabled (heap corruption), a borderless window of the screen's size |
+| `daytona-championship-usa-new-season-edition` | Daytona Championship USA New Season Edition | europar | works (user: 100%); the manual gearbox not engaged (the race in automatic) | `Sega/Daytona/Daytona.exe`, as the first edition; the shell's cabinet SKU (else NETWORK DISCOVERY) |
+| `men-in-black` | Men In Black | europar | works (headless test: attract, coins and free play, both players, guns aimed and shooting; user played on the desktop) | `MIB.exe` (Unity 2020 Mono, 64-bit), wal-loader64: Unity's input functions answered with the guns, the shell over TCP 18888 (credits, free play, security answers), `ShellData` settings from the profile, no lamp board |
 | `nobiteke-byon-byon` | Nobiteke! Byon Byon Daisakusen | konami | works (user: 100%) | `bin/byy.exe ..\ ..\` (§6.3h), `libacio.dll` replaced: HBHI board (switches, coins, two positional guns scaled onto the default calibration, security plugs), ICCA card reader, cabinet IP setup answered, e-Amusement offline (local mode), picture at the screen resolution in a borderless window |
 | `gashaaaan` | Gashaaaan | konami | works (headless test) | `bin/ballshooting.exe` (§6.3h), `iob.dll` replaced: I/O board (buttons, coins, ball supply, plugs), ballio's camera board answered (ball hits from the guns), the two overlapping screens shown as one picture, E:/F: save drives, OpenGL crosshairs |
 | `gashaaaan-refill` | Gashaaaan Refill! | konami | works (user: 100%) | `IG2/exec_root/gasya.exe` (§6.3h), `libbms.dll` replaced: BM-System (credits, e-Amusement offline), ig2ACLib's boards without hardware and its inputs answered (buttons, coins, ball hits from the guns), two screens in one window, E:/F: save drives, crosshairs |
@@ -8119,7 +8300,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `drakon-realm-keepers` | Drakon: Realm Keepers | adrenaline | user 100% (2026-11-03), 2 turrets | Sarbakan's turret game (Unity 2021.3 IL2CPP, 64-bit, §6.3k): `InputsManager.Update` and Unity's key functions replaced through IL2CPP's API (the guns, the cabinet's keys), Matrix dongle, no serial port, WiFi stubbed |
 | `rampage` | Rampage | adrenaline | user 100% (2026-11-02), 3 players | Adrenaline's 3-player monster game (Unity 2017.2, 64-bit, §6.3k): the payload (`xinput1_3.dll`) emulates its Kaboom Adrio board (joysticks, attack buttons on the keypad, callbacks from a Mono-attached thread) and Matrix dongle |
 | `hot-wheels-kings-of-the-road` | Hot Wheels: Kings of the Road | adrenaline | works headless (2026-11-02), 4 of 6 seats | Adrenaline's six-seat driving game (Unity 2018.3, 64-bit, §6.3k): the payload (`xinput1_3.dll`) emulates its three Kaboom Adrio Hot Wheels boards (wheels, pedals, coins, callbacks from a Mono-attached thread) and Matrix dongle; Wine's `winhttp` (no third-party patch) |
-| `need-for-speed-heat-takedown` | Need for Speed Heat Takedown | adrenaline | user 100% (2026-11-03), 1 wheel, force feedback, render scale | Sarbakan's driving game (Unity 2021.2, Mono, 64-bit, §6.3k): the payload (`xinput1_3.dll`) emulates its steering board on COM3 (Mono's `SerialPort`: the port listed in the registry, the wheel, pedals, nitro, keypad, coins; the car info played as force feedback) and Matrix dongle; Wine's `winhttp` (no third-party patch) |
+| `need-for-speed-heat-takedown` | Need for Speed Heat Takedown | adrenaline | user 100% (2026-11-03), 1 wheel, force feedback, render scale | Sarbakan's driving game (Unity 2021.2, Mono, 64-bit, §6.3k): the payload (`xinput1_3.dll`) emulates its steering board on COM3 (Mono's `SerialPort`: the port listed in the registry, the wheel, pedals, nitro, keypad, coins; the car info played as force feedback) and Matrix dongle; its seat shaker output (Wwise `SystemButt`, the race-long rumble on the speakers) not added unless `WAL_NFS_BUTTKICKER=1`; Wine's `winhttp` (no third-party patch) |
 | `hot-wheels-victory-lap` | Hot Wheels: Victory Lap | adrenaline | user 100% (2026-11-04), 1 wheel, force feedback | Sarbakan's driving game (Unity 6 IL2CPP, 64-bit, §6.3k): NFS Heat Takedown's steering board on COM3 through the game's `RS_232_DLL.dll` (the payload's), Matrix dongle, webcam pictures off; Wine's `winhttp` (no third-party patch) |
 | `infinity-blade-fx` | Infinity Blade FX | adrenaline | works headless (2026-11-03: coins, start, fight, gun swipes, shield, dodges), 1 player | Adrenaline's touch screen sword game (Unreal Engine 3, 32-bit, §6.3k): the payload (`xinput1_3.dll`, imported by the game) hooks its PQ Labs client and Matrix dongle imports, answers its built-in Kaboom board on the serial port; gun swipe gain option; engine ini without joysticks, Direct3D 9 |
 | `fruit-ninja-fx` | Fruit Ninja FX | adrenaline | user 100% (2026-11-05), gun slices, decrypted executable | Fruit Ninja FX 2's hardware path (§6.3k) on the dump's `FruitNinja.decrypted.exe` (the Matrix envelope removed, FRUIT-NINJA-FX-DECRYPTION.md): PQ Labs client and built-in Kaboom board; no dongle or figurine portal imports |
@@ -8136,7 +8317,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `top-gun-2` | Top Gun 2 | arcadepc | works (headless tests 2026-11-04: coins, start, aim and shots scoring, operator menu; user: display, crosshairs; 2026-11-05 user: levels full screen in landscape), 2 camera guns, landscape option | JXCompany's "ShotRedLight" (Unity 2017.2, 64-bit, §6.3i): rebuilt dump without BepInEx/ReShade (`TopGun2.exe`); the payload emulates the JX COM1 board (`jxboard.rs`, `jxcamera`), the SoftKey HID dongle and the camera tracker's positions; landscape by default (levels full screen, not stretched; menus, attract and loading in the bezel), portrait 1080x1920 fitted as an option, crosshair |
 | `galaxian-3` | Galaxian 3 | arcadepc | user 100% (2026-11-09), 4 guns (of the cabinet's 6) | Namco's Theater 6 LaserDisc game in the dump's patched MAME (`mame.exe gal3`, H.264 laserdiscs, §6.3i): the payload is MAME's raw input devices (a keyboard and one absolute mouse per player, `mame.rs`), `ctrlr\wal.cfg` maps them; startup popups patched out; ReShade off by default; stretch option (`keepaspect`) |
 | `burning-striker` | Burning Striker | arcadepc | user 100% (2026-11-09), 2 players (stick, 3 buttons) | Eolith's football game (DirectDraw / D3D7, 32-bit, §6.3i): COM1 board and DIP switches emulated (free play option), the protection's 3ddata.pak key from the dump's `eolith.key`; intro movie needs GE patches 0116/0117 (qasf DMO wrapper); focus loss no longer minimizes (wined3d behind d7vk) |
-| `come-on-baby` | Come on Baby! | arcadepc | user 100% (2026-11-09), 2 players (stick, 2 buttons, start) | ExtraLine's party game (Glide 2, 32-bit, §6.3i): the parallel port board's reader replaced (sticks, buttons, operator keys), the menu's service select given its own edge detection, free play option over `eep.rom`'s coins, the C: serial check patched; the runner's gxvk (a build after 0.1: chroma key) in a payload window with its own message loop, 4:3, black bezel |
+| `come-on-baby` | Come on Baby! | arcadepc | user 100% (2026-11-14), 2 players (stick, 2 buttons, start) | ExtraLine's party game (Glide 2, 32-bit, §6.3i): the parallel port board's reader replaced (sticks, buttons, operator keys), the menu's service select given its own edge detection, free play option over `eep.rom`'s coins, the C: serial check patched; the frame timer's mixed clocks made one (`GetTickCount` is `timeGetTime`: the title was never drawn); the dump's dgVoodoo 2.53 in its own window, its packed `SetWindowPos` kept on the centered 4:3, black bezel |
 | `come-on-baby-2` | Come On Baby! 2 Winter Championship | arcadepc | user 100% (2026-11-09), 2 players (stick, 2 buttons, start) | The sequel (DirectDraw / Direct3D 7 on d7vk, §6.3i): `comeonbaby.rs`'s second build (the parallel port reader, free play over `eep.rom`), the lamps' `out` writers and the C: serial check patched, the attract movie's `IDirectDrawVideo` setup skipped (the MPEG plays), the Korean operator menu in code page 949 |
 | `robin-hood` | Robin Hood | arcadepc | user 100% (2026-11-09), 1 gun | ICE's ticket redemption crossbow game (Direct3D 9, 32-bit, §6.3i): the serial board emulated (switches, coins, tickets paid at once), the crossbow's DirectInput joystick X from the gun's X position, the linked HASP HL API patched, free play option over `coinfree`, the dump's root as working directory |
 | `akuma-mortis-immortal` | Akuma Mortis Immortal | arcadepc | user 100% (2026-11-09), 2 guns | Lightgun game (Direct3D 9, 32-bit, §6.3i): the parallel port gun board emulated (`inpout32`'s `Inp32` / `Out32`: aim, triggers, switches, a gun sample per shot), the Dinkey dongle's checks patched, free play option, crosshairs, the dump's bezel |

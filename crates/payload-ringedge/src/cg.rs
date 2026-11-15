@@ -20,6 +20,10 @@
 //!   ([`env_parameters`]).
 //! * Vertex inputs: the game feeds generic attributes, its programs read the fixed function
 //!   ones ([`attrib_pointer`]).
+//! * Vertex textures (none on Mesa): the texels read at a constant position given as local
+//!   parameters before each draw ([`texel_parameters`]).
+//! * Texture reads at a level (`TXL`, a bias in ARB): the last level of each texture given
+//!   before each draw ([`level_parameters`]).
 //!
 //! Debugging: `WAL_RINGEDGE_CG_LOG=1` logs each compile and Cg's listing of the failed ones;
 //! `WAL_RINGEDGE_CG_DUMP=1` writes each compiled program to `cgdump\`;
@@ -59,7 +63,9 @@ fn gl_shots() {
     let shots = std::env::var("WAL_RINGEDGE_GL_SHOT").ok().and_then(|v| v.trim().parse::<f64>().ok());
     // the swaps also scale the picture (WAL_RINGEDGE_GL_SCALE)
     let scale = crate::glscale::init();
-    if shots.is_none() && !scale {
+    // the touch pointer (the common crosshair, Project DIVA Arcade's red dot) over the picture
+    CROSSHAIRS.store(wal_payload_common::crosshair::init_gl(), Ordering::Relaxed);
+    if shots.is_none() && !scale && !CROSSHAIRS.load(Ordering::Relaxed) {
         return;
     }
     let _ = unsafe { windows_sys::Win32::System::LibraryLoader::LoadLibraryA(c"opengl32.dll".as_ptr().cast()) };
@@ -81,6 +87,8 @@ fn gl_procs() {
     if cggl != 0 {
         unsafe { iat::hook_module(cggl, "opengl32.dll", "wglGetProcAddress", gl_proc as *const () as usize) };
     }
+    // the games loading their programs themselves (Project DIVA Arcade's GLEW)
+    unsafe { iat::hook("opengl32.dll", "wglGetProcAddress", gl_proc as *const () as usize) };
     if let Some(o) = unsafe { iat::hook("kernel32.dll", "GetProcAddress", get_proc as *const () as usize) } {
         ORIG_GET_PROC.store(o, Ordering::Relaxed);
     }
@@ -96,7 +104,7 @@ unsafe extern "system" fn get_proc(module: *mut c_void, name: *const c_char) -> 
         match unsafe { CStr::from_ptr(name) }.to_bytes() {
             b"wglGetProcAddress" => return gl_proc as *const () as usize,
             b"glBindProgramARB" | b"glProgramStringARB" | b"glProgramEnvParameters4fvEXT" | b"glVertexAttribPointer" | b"glVertexAttribPointerARB" | b"glEnableVertexAttribArray"
-            | b"glEnableVertexAttribArrayARB" | b"glDisableVertexAttribArray" | b"glDisableVertexAttribArrayARB" => return unsafe { gl_proc(name) },
+            | b"glEnableVertexAttribArrayARB" | b"glDisableVertexAttribArray" | b"glDisableVertexAttribArrayARB" | b"glDrawRangeElements" | b"glDrawRangeElementsEXT" => return unsafe { gl_proc(name) },
             _ => {}
         }
     }
@@ -111,7 +119,30 @@ static BOUND: [AtomicUsize; 2] = [AtomicUsize::new(0), AtomicUsize::new(0)];
 unsafe extern "system" fn gl_proc(name: *const c_char) -> usize {
     let orig: unsafe extern "system" fn(*const c_char) -> usize = unsafe { std::mem::transmute(ORIG_GL_PROC.load(Ordering::Relaxed)) };
     let f = unsafe { orig(name) };
-    if f == 0 || name.is_null() {
+    if name.is_null() {
+        return f;
+    }
+    if f == 0 {
+        let name = unsafe { CStr::from_ptr(name) };
+        // NVIDIA's coverage antialiasing (Project DIVA Arcade's buffers, called unchecked): the
+        // color samples
+        if name.to_bytes() == b"glRenderbufferStorageMultisampleCoverageNV" && FIX.load(Ordering::Relaxed) {
+            let ms = unsafe { orig(c"glRenderbufferStorageMultisample".as_ptr()) };
+            if ms != 0 {
+                ORIG_MULTISAMPLE.store(ms, Ordering::Relaxed);
+                return multisample_coverage as *const () as usize;
+            }
+        }
+        // NV_gpu_program4's integer parameters (Border Break Scramble's, called unchecked at its
+        // battle's start): the float ones, its programs translated to float ARB programs
+        if FIX.load(Ordering::Relaxed)
+            && let Some(f) = int_parameters(name.to_bytes(), &orig)
+        {
+            return f;
+        }
+        if *LOG.get().unwrap_or(&false) {
+            log!("cg: {} absent", name.to_string_lossy());
+        }
         return f;
     }
     match unsafe { CStr::from_ptr(name) }.to_bytes() {
@@ -122,6 +153,10 @@ unsafe extern "system" fn gl_proc(name: *const c_char) -> usize {
         b"glProgramStringARB" => {
             ORIG_STRING.store(f, Ordering::Relaxed);
             program_string as *const () as usize
+        }
+        b"glDrawRangeElements" | b"glDrawRangeElementsEXT" if FIX.load(Ordering::Relaxed) => {
+            ORIG_DRAW_RANGE.store(f, Ordering::Relaxed);
+            draw_range as *const () as usize
         }
         b"glVertexAttribPointer" | b"glVertexAttribPointerARB" if FIX.load(Ordering::Relaxed) => {
             ORIG_ATTRIB_POINTER.store(f, Ordering::Relaxed);
@@ -135,6 +170,26 @@ unsafe extern "system" fn gl_proc(name: *const c_char) -> usize {
             ORIG_DISABLE_ATTRIB.store(f, Ordering::Relaxed);
             disable_attrib as *const () as usize
         }
+        // ... and their constant values (an object's index with its array disabled)
+        n if n.starts_with(b"glVertexAttribI") && !n.ends_with(b"PointerEXT") && !n.ends_with(b"Pointer") && std::env::var("WAL_RINGEDGE_GL_INT_ATTRIBS").is_ok_and(|v| v.trim() == "1") => {
+            int_attrib_value(n, &orig).unwrap_or(f)
+        }
+        b"glVertexAttribIPointerEXT" | b"glVertexAttribIPointer" if std::env::var("WAL_RINGEDGE_GL_INT_ATTRIBS").is_ok_and(|v| v.trim() == "1") => {
+            let float = unsafe { orig(c"glVertexAttribPointerARB".as_ptr()) };
+            if float == 0 {
+                return f;
+            }
+            ORIG_FLOAT_POINTER.store(float, Ordering::Relaxed);
+            int_attrib_pointer as *const () as usize
+        }
+        b"glProgramEnvParameter4fARB" if FIX.load(Ordering::Relaxed) => {
+            ORIG_ENV_PARAMETER_4F.store(f, Ordering::Relaxed);
+            env_parameter_4f as *const () as usize
+        }
+        b"glProgramEnvParameter4fvARB" if FIX.load(Ordering::Relaxed) => {
+            ORIG_ENV_PARAMETER_4FV.store(f, Ordering::Relaxed);
+            env_parameter_4fv as *const () as usize
+        }
         b"glProgramEnvParameters4fvEXT" if FIX.load(Ordering::Relaxed) => {
             ORIG_ENVS.store(f, Ordering::Relaxed);
             let local = unsafe { orig(c"glProgramLocalParameters4fvEXT".as_ptr()) };
@@ -143,6 +198,144 @@ unsafe extern "system" fn gl_proc(name: *const c_char) -> usize {
         }
         _ => f,
     }
+}
+
+static ORIG_MULTISAMPLE: AtomicUsize = AtomicUsize::new(0);
+static ORIG_FLOAT_POINTER: AtomicUsize = AtomicUsize::new(0);
+
+static ORIG_ATTRIB_4F: AtomicUsize = AtomicUsize::new(0);
+
+/// `glVertexAttribI{1,4}{i,ui}{,v}[EXT]` as `glVertexAttrib4fARB`.
+fn int_attrib_value(name: &[u8], orig: &unsafe extern "system" fn(*const c_char) -> usize) -> Option<usize> {
+    let rest = name.strip_prefix(b"glVertexAttribI")?;
+    let rest = rest.strip_suffix(b"EXT").unwrap_or(rest);
+    let hook: usize = match rest {
+        b"1i" => attrib_i1i as *const () as usize,
+        b"1ui" => attrib_i1ui as *const () as usize,
+        b"4i" => attrib_i4i as *const () as usize,
+        b"4ui" => attrib_i4ui as *const () as usize,
+        b"1iv" => attrib_i1iv as *const () as usize,
+        b"1uiv" => attrib_i1uiv as *const () as usize,
+        b"4iv" => attrib_i4iv as *const () as usize,
+        b"4uiv" => attrib_i4uiv as *const () as usize,
+        _ => return None,
+    };
+    let f = unsafe { orig(c"glVertexAttrib4fARB".as_ptr()) };
+    if f == 0 {
+        return None;
+    }
+    ORIG_ATTRIB_4F.store(f, Ordering::Relaxed);
+    Some(hook)
+}
+
+fn attrib_4f(index: u32, v: [f32; 4]) {
+    let f: unsafe extern "system" fn(u32, f32, f32, f32, f32) = unsafe { std::mem::transmute(ORIG_ATTRIB_4F.load(Ordering::Relaxed)) };
+    unsafe { f(index, v[0], v[1], v[2], v[3]) }
+}
+
+unsafe extern "system" fn attrib_i1i(index: u32, x: i32) {
+    attrib_4f(index, [x as f32, 0.0, 0.0, 1.0]);
+}
+unsafe extern "system" fn attrib_i1ui(index: u32, x: u32) {
+    attrib_4f(index, [x as f32, 0.0, 0.0, 1.0]);
+}
+unsafe extern "system" fn attrib_i4i(index: u32, x: i32, y: i32, z: i32, w: i32) {
+    attrib_4f(index, [x as f32, y as f32, z as f32, w as f32]);
+}
+unsafe extern "system" fn attrib_i4ui(index: u32, x: u32, y: u32, z: u32, w: u32) {
+    attrib_4f(index, [x as f32, y as f32, z as f32, w as f32]);
+}
+unsafe extern "system" fn attrib_i1iv(index: u32, v: *const i32) {
+    attrib_4f(index, [unsafe { *v } as f32, 0.0, 0.0, 1.0]);
+}
+unsafe extern "system" fn attrib_i1uiv(index: u32, v: *const u32) {
+    attrib_4f(index, [unsafe { *v } as f32, 0.0, 0.0, 1.0]);
+}
+unsafe extern "system" fn attrib_i4iv(index: u32, v: *const i32) {
+    let v = unsafe { std::slice::from_raw_parts(v, 4) };
+    attrib_4f(index, [v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32]);
+}
+unsafe extern "system" fn attrib_i4uiv(index: u32, v: *const u32) {
+    let v = unsafe { std::slice::from_raw_parts(v, 4) };
+    attrib_4f(index, [v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32]);
+}
+
+/// `glVertexAttribIPointer` as `glVertexAttribPointer`, not normalized.
+unsafe extern "system" fn int_attrib_pointer(index: u32, size: i32, kind: u32, stride: i32, pointer: *const c_void) {
+    let f: unsafe extern "system" fn(u32, i32, u32, u8, i32, *const c_void) = unsafe { std::mem::transmute(ORIG_FLOAT_POINTER.load(Ordering::Relaxed)) };
+    unsafe { f(index, size, kind, 0, stride, pointer) }
+}
+
+static ORIG_ENV_4F: AtomicUsize = AtomicUsize::new(0);
+static ORIG_LOCAL_4F: AtomicUsize = AtomicUsize::new(0);
+
+/// `glProgram{Env,Local}ParameterI4{i,ui}{,v}NV` (absent on Mesa) as the float
+/// `glProgram{Env,Local}Parameter4fARB`.
+fn int_parameters(name: &[u8], orig: &unsafe extern "system" fn(*const c_char) -> usize) -> Option<usize> {
+    let (local, rest) = match name.strip_prefix(b"glProgram")? {
+        r if r.starts_with(b"EnvParameterI4") => (false, &r[14..]),
+        r if r.starts_with(b"LocalParameterI4") => (true, &r[16..]),
+        _ => return None,
+    };
+    let (slot, float) = if local { (&ORIG_LOCAL_4F, c"glProgramLocalParameter4fARB") } else { (&ORIG_ENV_4F, c"glProgramEnvParameter4fARB") };
+    let f = unsafe { orig(float.as_ptr()) };
+    if f == 0 {
+        return None;
+    }
+    slot.store(f, Ordering::Relaxed);
+    let hook: usize = match (local, rest) {
+        (false, b"iNV") => env_i4i as *const () as usize,
+        (false, b"uiNV") => env_i4ui as *const () as usize,
+        (false, b"ivNV") => env_i4iv as *const () as usize,
+        (false, b"uivNV") => env_i4uiv as *const () as usize,
+        (true, b"iNV") => local_i4i as *const () as usize,
+        (true, b"uiNV") => local_i4ui as *const () as usize,
+        (true, b"ivNV") => local_i4iv as *const () as usize,
+        (true, b"uivNV") => local_i4uiv as *const () as usize,
+        _ => return None,
+    };
+    Some(hook)
+}
+
+fn parameter_4f(slot: &AtomicUsize, target: u32, index: u32, v: [f32; 4]) {
+    let f: unsafe extern "system" fn(u32, u32, f32, f32, f32, f32) = unsafe { std::mem::transmute(slot.load(Ordering::Relaxed)) };
+    unsafe { f(target, index, v[0], v[1], v[2], v[3]) }
+}
+
+unsafe extern "system" fn env_i4i(target: u32, index: u32, x: i32, y: i32, z: i32, w: i32) {
+    parameter_4f(&ORIG_ENV_4F, target, index, [x as f32, y as f32, z as f32, w as f32]);
+}
+unsafe extern "system" fn env_i4ui(target: u32, index: u32, x: u32, y: u32, z: u32, w: u32) {
+    parameter_4f(&ORIG_ENV_4F, target, index, [x as f32, y as f32, z as f32, w as f32]);
+}
+unsafe extern "system" fn env_i4iv(target: u32, index: u32, v: *const i32) {
+    let v = unsafe { std::slice::from_raw_parts(v, 4) };
+    parameter_4f(&ORIG_ENV_4F, target, index, [v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32]);
+}
+unsafe extern "system" fn env_i4uiv(target: u32, index: u32, v: *const u32) {
+    let v = unsafe { std::slice::from_raw_parts(v, 4) };
+    parameter_4f(&ORIG_ENV_4F, target, index, [v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32]);
+}
+unsafe extern "system" fn local_i4i(target: u32, index: u32, x: i32, y: i32, z: i32, w: i32) {
+    parameter_4f(&ORIG_LOCAL_4F, target, index, [x as f32, y as f32, z as f32, w as f32]);
+}
+unsafe extern "system" fn local_i4ui(target: u32, index: u32, x: u32, y: u32, z: u32, w: u32) {
+    parameter_4f(&ORIG_LOCAL_4F, target, index, [x as f32, y as f32, z as f32, w as f32]);
+}
+unsafe extern "system" fn local_i4iv(target: u32, index: u32, v: *const i32) {
+    let v = unsafe { std::slice::from_raw_parts(v, 4) };
+    parameter_4f(&ORIG_LOCAL_4F, target, index, [v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32]);
+}
+unsafe extern "system" fn local_i4uiv(target: u32, index: u32, v: *const u32) {
+    let v = unsafe { std::slice::from_raw_parts(v, 4) };
+    parameter_4f(&ORIG_LOCAL_4F, target, index, [v[0] as f32, v[1] as f32, v[2] as f32, v[3] as f32]);
+}
+
+/// `glRenderbufferStorageMultisampleCoverageNV` as `glRenderbufferStorageMultisample` with the
+/// color samples (the coverage ones without colors when none).
+unsafe extern "system" fn multisample_coverage(target: u32, coverage: i32, color: i32, format: u32, width: i32, height: i32) {
+    let f: unsafe extern "system" fn(u32, i32, u32, i32, i32) = unsafe { std::mem::transmute(ORIG_MULTISAMPLE.load(Ordering::Relaxed)) };
+    unsafe { f(target, if color > 0 { color } else { coverage }, format, width, height) }
 }
 
 static ORIG_ENVS: AtomicUsize = AtomicUsize::new(0);
@@ -234,38 +427,294 @@ unsafe extern "system" fn disable_attrib(index: u32) {
 
 /// The game writes its programs' parameters as environment parameters (`program.env`), its
 /// programs read local ones (`program.local`, as Cg binds them): fine on NVIDIA, zeros on Mesa
-/// (a black screen). Each write also goes to the bound program's locals.
+/// (a black screen). Each write also goes to the bound program's locals, unless that program
+/// reads environment parameters itself (Project DIVA Arcade's own programs set their locals
+/// themselves: its env 4, the fog color, landed on its tone map's local 4, the tone scale).
 unsafe extern "system" fn env_parameters(target: u32, index: u32, count: i32, params: *const f32) {
     let env: unsafe extern "system" fn(u32, u32, i32, *const f32) = unsafe { std::mem::transmute(ORIG_ENVS.load(Ordering::Relaxed)) };
     unsafe { env(target, index, count, params) };
+    let attrib = crate::nvasm::ATTRIB_ENV;
+    if target == 0x8620 && ATTRIB_MIRROR.load(Ordering::Relaxed) && (index..index + count.max(0) as u32).contains(&attrib) {
+        unsafe { env(0x8804, attrib, 1, params.add(4 * (attrib - index) as usize)) };
+    }
     let local = ORIG_LOCALS.load(Ordering::Relaxed);
-    if local != 0 {
+    let bound = (target, BOUND[(target == 0x8804) as usize].load(Ordering::Relaxed) as u32);
+    if local != 0 && !READS_ENV.lock().unwrap().contains(&bound) {
         let local: unsafe extern "system" fn(u32, u32, i32, *const f32) = unsafe { std::mem::transmute(local) };
         unsafe { local(target, index, count, params) };
     }
 }
 
+static ORIG_ENV_PARAMETER_4F: AtomicUsize = AtomicUsize::new(0);
+static ORIG_ENV_PARAMETER_4FV: AtomicUsize = AtomicUsize::new(0);
+/// Translated NV_gpu_program4 fragment programs read their generic interpolant 0 as the
+/// fragment environment parameter `nvasm::ATTRIB_ENV` (Border Break Scramble's object colors):
+/// the vertex one of that index copied there.
+static ATTRIB_MIRROR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+unsafe extern "system" fn env_parameter_4f(target: u32, index: u32, x: f32, y: f32, z: f32, w: f32) {
+    let f: unsafe extern "system" fn(u32, u32, f32, f32, f32, f32) = unsafe { std::mem::transmute(ORIG_ENV_PARAMETER_4F.load(Ordering::Relaxed)) };
+    unsafe { f(target, index, x, y, z, w) };
+    if target == 0x8620 && index == crate::nvasm::ATTRIB_ENV && ATTRIB_MIRROR.load(Ordering::Relaxed) {
+        unsafe { f(0x8804, index, x, y, z, w) };
+    }
+}
+
+unsafe extern "system" fn env_parameter_4fv(target: u32, index: u32, v: *const f32) {
+    let f: unsafe extern "system" fn(u32, u32, *const f32) = unsafe { std::mem::transmute(ORIG_ENV_PARAMETER_4FV.load(Ordering::Relaxed)) };
+    unsafe { f(target, index, v) };
+    if target == 0x8620 && index == crate::nvasm::ATTRIB_ENV && ATTRIB_MIRROR.load(Ordering::Relaxed) {
+        unsafe { f(0x8804, index, v) };
+    }
+}
+
 unsafe extern "system" fn bind_program(target: u32, id: u32) {
     BOUND[(target == 0x8804) as usize].store(id as usize, Ordering::Relaxed);
+    if target == 0x8620 {
+        let units = TEXELS.lock().unwrap().get(&id).copied().unwrap_or(0);
+        BOUND_TEXELS.store(units as usize, Ordering::Relaxed);
+    } else if target == 0x8804 {
+        let units = LEVELS.lock().unwrap().get(&id).copied().unwrap_or(0);
+        BOUND_LEVELS.store(units as usize, Ordering::Relaxed);
+    }
     let orig: unsafe extern "system" fn(u32, u32) = unsafe { std::mem::transmute(ORIG_BIND.load(Ordering::Relaxed)) };
     unsafe { orig(target, id) }
 }
 
-unsafe extern "system" fn program_string(target: u32, format: u32, len: i32, text: *const u8) {
-    if !DUMP_PROGRAMS.load(Ordering::Relaxed) {
-        let orig: unsafe extern "system" fn(u32, u32, i32, *const u8) = unsafe { std::mem::transmute(ORIG_STRING.load(Ordering::Relaxed)) };
-        unsafe { orig(target, format, len, text) };
-        if *LOG.get().unwrap_or(&false) {
-            program_error(text, len);
-        }
+/// The vertex programs reading texels at a constant position (`nvasm::TEXEL_LOCAL`), by id:
+/// their texture units (bits).
+static TEXELS: std::sync::Mutex<std::collections::BTreeMap<u32, u16>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// The bound vertex program's [`TEXELS`] units.
+static BOUND_TEXELS: AtomicUsize = AtomicUsize::new(0);
+/// The fragment programs reading textures at a level (`TXL`, `nvasm::LEVELS_LOCAL`), by id:
+/// their texture units (bits), the cube map ones in the high 16 bits.
+static LEVELS: std::sync::Mutex<std::collections::BTreeMap<u32, u32>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// The bound fragment program's [`LEVELS`] units.
+static BOUND_LEVELS: AtomicUsize = AtomicUsize::new(0);
+static ORIG_DRAW_ARRAYS: AtomicUsize = AtomicUsize::new(0);
+static ORIG_DRAW_ELEMENTS: AtomicUsize = AtomicUsize::new(0);
+static ORIG_DRAW_RANGE: AtomicUsize = AtomicUsize::new(0);
+static ORIG_BEGIN: AtomicUsize = AtomicUsize::new(0);
+
+/// Mesa has no vertex textures (NVIDIA's vp40): the texels the bound vertex program reads at a
+/// constant position (Project DIVA Arcade's auto exposure, the luminance its reductions leave
+/// at (0, 0) of texture 3, else zero: the brightest exposure, its characters blown out in
+/// bloom) read before each draw into its local parameters.
+fn texel_parameters() {
+    let units = BOUND_TEXELS.load(Ordering::Relaxed) as u16;
+    if units == 0 {
         return;
     }
-    let id = BOUND[(target == 0x8804) as usize].load(Ordering::Relaxed);
-    let _ = std::fs::create_dir_all("glprog");
-    let kind = if target == 0x8804 { "fp" } else { "vp" };
-    let _ = std::fs::write(format!("glprog/{id:04}_{kind}.txt"), unsafe { std::slice::from_raw_parts(text, len.max(0) as usize) });
+    static PROCS: OnceLock<[usize; 5]> = OnceLock::new();
+    let procs = PROCS.get_or_init(|| {
+        let orig: unsafe extern "system" fn(*const c_char) -> usize = unsafe { std::mem::transmute(ORIG_GL_PROC.load(Ordering::Relaxed)) };
+        [c"glActiveTexture", c"glGenFramebuffersEXT", c"glBindFramebufferEXT", c"glFramebufferTexture2DEXT", c"glProgramLocalParameter4fvARB"].map(|n| unsafe { orig(n.as_ptr()) })
+    });
+    if procs.contains(&0) {
+        return;
+    }
+    let active_texture: unsafe extern "system" fn(u32) = unsafe { std::mem::transmute(procs[0]) };
+    let gen_framebuffers: unsafe extern "system" fn(i32, *mut u32) = unsafe { std::mem::transmute(procs[1]) };
+    let bind_framebuffer: unsafe extern "system" fn(u32, u32) = unsafe { std::mem::transmute(procs[2]) };
+    let framebuffer_texture: unsafe extern "system" fn(u32, u32, u32, u32, i32) = unsafe { std::mem::transmute(procs[3]) };
+    let local: unsafe extern "system" fn(u32, u32, *const f32) = unsafe { std::mem::transmute(procs[4]) };
+    let get_integer: unsafe extern "system" fn(u32, *mut i32) = unsafe { std::mem::transmute(gl11(c"glGetIntegerv")) };
+    let read_buffer: unsafe extern "system" fn(u32) = unsafe { std::mem::transmute(gl11(c"glReadBuffer")) };
+    let read_pixels: unsafe extern "system" fn(i32, i32, i32, i32, u32, u32, *mut c_void) = unsafe { std::mem::transmute(gl11(c"glReadPixels")) };
+    // GL_ACTIVE_TEXTURE, GL_READ_FRAMEBUFFER_BINDING_EXT, GL_PIXEL_PACK_BUFFER_BINDING
+    let (mut active, mut read_fb, mut pack) = (0, 0, 0);
+    unsafe {
+        get_integer(0x84E0, &mut active);
+        get_integer(0x8CAA, &mut read_fb);
+        get_integer(0x88ED, &mut pack);
+    }
+    if pack != 0 {
+        return;
+    }
+    static FRAMEBUFFER: AtomicUsize = AtomicUsize::new(0);
+    if FRAMEBUFFER.load(Ordering::Relaxed) == 0 {
+        let mut fb = 0;
+        unsafe { gen_framebuffers(1, &mut fb) };
+        FRAMEBUFFER.store(fb as usize, Ordering::Relaxed);
+    }
+    // GL_READ_FRAMEBUFFER_EXT, its color attachment 0
+    unsafe { bind_framebuffer(0x8CA8, FRAMEBUFFER.load(Ordering::Relaxed) as u32) };
+    for unit in (0..16).filter(|u| units & (1 << u) != 0) {
+        let mut texture = 0;
+        unsafe {
+            active_texture(0x84C0 + unit);
+            // GL_TEXTURE_BINDING_2D
+            get_integer(0x8069, &mut texture);
+        }
+        let mut texel = [0f32; 4];
+        if texture != 0 {
+            unsafe {
+                framebuffer_texture(0x8CA8, 0x8CE0, 0x0DE1, texture as u32, 0);
+                read_buffer(0x8CE0);
+                // GL_RGBA, GL_FLOAT
+                read_pixels(0, 0, 1, 1, 0x1908, 0x1406, texel.as_mut_ptr().cast());
+            }
+        }
+        unsafe { local(0x8620, crate::nvasm::TEXEL_LOCAL + unit, texel.as_ptr()) };
+    }
+    unsafe {
+        framebuffer_texture(0x8CA8, 0x8CE0, 0x0DE1, 0, 0);
+        bind_framebuffer(0x8CA8, read_fb as u32);
+        active_texture(active as u32);
+    }
+}
+
+/// The last level of the textures the bound fragment program reads at a level (`TXL`, a bias
+/// in ARB, exact for the last level whatever the scale: Project DIVA Arcade's YCbCr sprites,
+/// their chroma in level 1 of 2, stretched; read from level 0, every sprite red) into its local
+/// parameters before each draw.
+fn level_parameters() {
+    let units = BOUND_LEVELS.load(Ordering::Relaxed) as u32;
+    if units == 0 {
+        return;
+    }
+    static PROCS: OnceLock<[usize; 2]> = OnceLock::new();
+    let procs = PROCS.get_or_init(|| {
+        let orig: unsafe extern "system" fn(*const c_char) -> usize = unsafe { std::mem::transmute(ORIG_GL_PROC.load(Ordering::Relaxed)) };
+        [c"glActiveTexture", c"glProgramLocalParameter4fvARB"].map(|n| unsafe { orig(n.as_ptr()) })
+    });
+    if procs.contains(&0) {
+        return;
+    }
+    let active_texture: unsafe extern "system" fn(u32) = unsafe { std::mem::transmute(procs[0]) };
+    let local: unsafe extern "system" fn(u32, u32, *const f32) = unsafe { std::mem::transmute(procs[1]) };
+    let get_integer: unsafe extern "system" fn(u32, *mut i32) = unsafe { std::mem::transmute(gl11(c"glGetIntegerv")) };
+    let get_parameter: unsafe extern "system" fn(u32, u32, *mut i32) = unsafe { std::mem::transmute(gl11(c"glGetTexParameteriv")) };
+    let get_level_parameter: unsafe extern "system" fn(u32, i32, u32, *mut i32) = unsafe { std::mem::transmute(gl11(c"glGetTexLevelParameteriv")) };
+    let mut active = 0;
+    // GL_ACTIVE_TEXTURE
+    unsafe { get_integer(0x84E0, &mut active) };
+    for unit in (0..16).filter(|u| units & (1 << u) != 0) {
+        // GL_TEXTURE_CUBE_MAP (its first face) or GL_TEXTURE_2D
+        let (target, image) = if units & (1 << (16 + unit)) != 0 { (0x8513, 0x8515) } else { (0x0DE1, 0x0DE1) };
+        // GL_TEXTURE_MAX_LEVEL, the levels defined below it (GL_TEXTURE_WIDTH)
+        let mut max = 0;
+        unsafe {
+            active_texture(0x84C0 + unit);
+            get_parameter(target, 0x813D, &mut max);
+        }
+        let mut last = 0;
+        while last < max.min(15) {
+            let mut width = 0;
+            unsafe { get_level_parameter(image, last + 1, 0x1000, &mut width) };
+            if width == 0 {
+                break;
+            }
+            last += 1;
+        }
+        let levels = [last as f32; 4];
+        unsafe { local(0x8804, crate::nvasm::LEVELS_LOCAL + unit, levels.as_ptr()) };
+    }
+    unsafe { active_texture(active as u32) };
+}
+
+unsafe extern "system" fn draw_arrays(mode: u32, first: i32, count: i32) {
+    texel_parameters();
+    level_parameters();
+    let orig: unsafe extern "system" fn(u32, i32, i32) = unsafe { std::mem::transmute(ORIG_DRAW_ARRAYS.load(Ordering::Relaxed)) };
+    unsafe { orig(mode, first, count) }
+}
+
+unsafe extern "system" fn draw_elements(mode: u32, count: i32, kind: u32, indices: *const c_void) {
+    texel_parameters();
+    level_parameters();
+    let orig: unsafe extern "system" fn(u32, i32, u32, *const c_void) = unsafe { std::mem::transmute(ORIG_DRAW_ELEMENTS.load(Ordering::Relaxed)) };
+    unsafe { orig(mode, count, kind, indices) }
+}
+
+unsafe extern "system" fn draw_range(mode: u32, start: u32, end: u32, count: i32, kind: u32, indices: *const c_void) {
+    texel_parameters();
+    level_parameters();
+    let orig: unsafe extern "system" fn(u32, u32, u32, i32, u32, *const c_void) = unsafe { std::mem::transmute(ORIG_DRAW_RANGE.load(Ordering::Relaxed)) };
+    unsafe { orig(mode, start, end, count, kind, indices) }
+}
+
+unsafe extern "system" fn begin(mode: u32) {
+    texel_parameters();
+    level_parameters();
+    let orig: unsafe extern "system" fn(u32) = unsafe { std::mem::transmute(ORIG_BEGIN.load(Ordering::Relaxed)) };
+    unsafe { orig(mode) }
+}
+
+/// The programs (target, id) reading `program.env` themselves: [`env_parameters`].
+static READS_ENV: std::sync::Mutex<std::collections::BTreeSet<(u32, u32)>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+unsafe extern "system" fn program_string(target: u32, format: u32, len: i32, text: *const u8) {
+    let original = unsafe { std::slice::from_raw_parts(text, len.max(0) as usize) };
+    {
+        let program = (target, BOUND[(target == 0x8804) as usize].load(Ordering::Relaxed) as u32);
+        let mut reads = READS_ENV.lock().unwrap();
+        if original.windows(11).any(|w| w == b"program.env") {
+            reads.insert(program);
+        } else {
+            reads.remove(&program);
+        }
+    }
+    if DUMP_PROGRAMS.load(Ordering::Relaxed) {
+        let id = BOUND[(target == 0x8804) as usize].load(Ordering::Relaxed);
+        let _ = std::fs::create_dir_all("glprog");
+        let kind = if target == 0x8804 { "fp" } else { "vp" };
+        let _ = std::fs::write(format!("glprog/{id:04}_{kind}.txt"), original);
+    }
+    // the programs the game gives GL itself (Project DIVA Arcade's), NVIDIA assembly translated
+    let fixed = match std::str::from_utf8(original) {
+        Ok(t) if FIX.load(Ordering::Relaxed) && crate::nvasm::nvidia(t) => {
+            let fixed = crate::nvasm::translate(t);
+            if fixed.is_none() {
+                static UNTRANSLATED: AtomicUsize = AtomicUsize::new(0);
+                if UNTRANSLATED.fetch_add(1, Ordering::Relaxed) < 20 {
+                    log!("cg: program not translated: {}", t.lines().next().unwrap_or(""));
+                }
+            }
+            // a fragment program not translated (Project DIVA Arcade's blurs without
+            // WAL_RINGEDGE_CG_REPEAT, loops of a parameter's length): its first texture
+            // as is (a blur without radius), not an invalid program (nothing drawn)
+            fixed.or_else(|| (target == 0x8804).then(|| "!!ARBfp1.0\nTEMP c;\nTEX c, fragment.texcoord[0], texture[0], 2D;\nMOV result.color, c;\nEND\n".to_string()))
+        }
+        _ => None,
+    };
+    if target == 0x8804 && fixed.as_deref().is_some_and(|f| f.contains(&format!("program.env[{}]", crate::nvasm::ATTRIB_ENV))) && original.windows(15).any(|w| w == b"fragment.attrib") {
+        ATTRIB_MIRROR.store(true, Ordering::Relaxed);
+    }
+    if target == 0x8620 {
+        let units = fixed.as_deref().map_or(0, |f| (0..16u32).filter(|u| f.contains(&format!("program.local[{}]", crate::nvasm::TEXEL_LOCAL + u))).fold(0u16, |m, u| m | 1 << u));
+        let id = BOUND[0].load(Ordering::Relaxed) as u32;
+        let mut texels = TEXELS.lock().unwrap();
+        if units != 0 {
+            texels.insert(id, units);
+        } else {
+            texels.remove(&id);
+        }
+        BOUND_TEXELS.store(units as usize, Ordering::Relaxed);
+    } else if target == 0x8804 {
+        let units = fixed.as_deref().map_or(0, |f| {
+            (0..16u32)
+                .filter(|u| f.contains(&format!("program.local[{}]", crate::nvasm::LEVELS_LOCAL + u)))
+                .fold(0u32, |m, u| m | 1 << u | (f.contains(&format!("texture[{u}], CUBE")) as u32) << (16 + u))
+        });
+        let id = BOUND[1].load(Ordering::Relaxed) as u32;
+        let mut levels = LEVELS.lock().unwrap();
+        if units != 0 {
+            levels.insert(id, units);
+        } else {
+            levels.remove(&id);
+        }
+        BOUND_LEVELS.store(units as usize, Ordering::Relaxed);
+    }
+    let (text, len) = match &fixed {
+        Some(f) => (f.as_ptr(), f.len() as i32),
+        None => (text, len),
+    };
     let orig: unsafe extern "system" fn(u32, u32, i32, *const u8) = unsafe { std::mem::transmute(ORIG_STRING.load(Ordering::Relaxed)) };
-    unsafe { orig(target, format, len, text) }
+    unsafe { orig(target, format, len, text) };
+    if *LOG.get().unwrap_or(&false) {
+        program_error(text, len);
+    }
 }
 
 /// WAL_RINGEDGE_CG_LOG: a program GL refused, with its error and the program.
@@ -289,8 +738,16 @@ static FIX: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(f
 static SHOT_MS: AtomicUsize = AtomicUsize::new(0);
 static ORIG_SWAP: AtomicUsize = AtomicUsize::new(0);
 
+static CROSSHAIRS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 unsafe extern "system" fn swap_buffers(hdc: *mut c_void) -> i32 {
     unsafe { crate::glscale::present(hdc) };
+    if CROSSHAIRS.load(Ordering::Relaxed) {
+        let window = unsafe { windows_sys::Win32::Graphics::Gdi::WindowFromDC(hdc as _) };
+        if !window.is_null() {
+            unsafe { wal_payload_common::crosshair::draw_gl_window(window) };
+        }
+    }
     if SHOT_MS.load(Ordering::Relaxed) == 0 {
         let orig: unsafe extern "system" fn(*mut c_void) -> i32 = unsafe { std::mem::transmute(ORIG_SWAP.load(Ordering::Relaxed)) };
         return unsafe { orig(hdc) };
@@ -371,6 +828,16 @@ pub(crate) fn init() {
         FIX.store(true, Ordering::Relaxed);
         if !DUMP_PROGRAMS.load(Ordering::Relaxed) {
             gl_procs();
+        }
+        // the vertex programs' texels (texel_parameters)
+        for (name, hook, orig) in [
+            ("glDrawArrays", draw_arrays as *const () as usize, &ORIG_DRAW_ARRAYS),
+            ("glDrawElements", draw_elements as *const () as usize, &ORIG_DRAW_ELEMENTS),
+            ("glBegin", begin as *const () as usize, &ORIG_BEGIN),
+        ] {
+            if let Some(o) = unsafe { iat::hook("opengl32.dll", name, hook) } {
+                orig.store(o, Ordering::Relaxed);
+            }
         }
         unsafe { nv40_profiles() };
         if let Some(o) = unsafe { iat::hook("cg.dll", "cgGetProgramString", get_program_string as *const () as usize) } {

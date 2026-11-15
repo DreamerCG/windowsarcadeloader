@@ -6,11 +6,11 @@
 //! - the JVS I/O board's player 1 and 2 switches 5-7: the six air sensors (infrared beams above
 //!   the slider, from the lowest: 0 player 1's btn5, 1 player 2's btn5, 2 player 1's btn6...),
 //!   on while their beam is clear; a raised hand breaks them from the lowest up
-//! - COM10, COM11: the 837-15093-06 LED boards (`led.rs`)
+//! - COM10, COM11: the 837-15093-06 LED boards (payload-common `led.rs`)
 //! - the title server (`chuni/server.rs`), answered in ALL.Net's server
 //! - the backup's settings: the cabinet its store's distribution server (`distribution_server`)
 //! - free play in amLib's credit record (`WAL_ALLS_FREEPLAY`, else `WAL_FREEPLAY`, default on)
-//! - the billing server (`billing.rs`)
+//! - the billing server (payload-common `billing.rs`)
 //! - COM12: the Aime reader, in `aimeReaderHost.exe` (a program of its own, the game reading the
 //!   cards from it through shared memory)
 //!
@@ -251,15 +251,15 @@ fn serve_distribution(record: &mut [u8]) -> bool {
 /// amLib's credit record (backup record 1: at 0x40, its copy at 0x840, 0x50 bytes: CRC-32 of the
 /// bytes after it), free play at +0x0A: `WAL_ALLS_FREEPLAY`, else the common `WAL_FREEPLAY`
 /// (default on). Set in the backup at start and in the game's writes (a blank backup's first).
-const CREDIT: [u64; 2] = [0x40, 0x840];
-const CREDIT_SIZE: usize = 0x50;
+pub(crate) const CREDIT: [u64; 2] = [0x40, 0x840];
+pub(crate) const CREDIT_SIZE: usize = 0x50;
 
-fn free_play() -> bool {
+pub(crate) fn free_play() -> bool {
     wal_payload_common::free_play("WAL_ALLS_FREEPLAY").unwrap_or(true)
 }
 
 /// A credit record given the free play setting, when it is one (its sum checked).
-fn set_free_play(record: &mut [u8]) -> bool {
+pub(crate) fn set_free_play(record: &mut [u8]) -> bool {
     let valid = u32::from_le_bytes(record[..4].try_into().unwrap()) == crc32(&record[4..]) && record.iter().any(|&b| b != 0);
     if valid && record[0x0A] != free_play() as u8 {
         record[0x0A] = free_play() as u8;
@@ -384,7 +384,7 @@ fn alib_debug() {
 /// the slider on COM1, the LED boards on COM2 / COM3 (a CVT cabinet).
 pub(crate) fn init_chusan() {
     serial::install_streaming("COM1", slider, slider_scan);
-    crate::led::init_pair("COM2", "COM3");
+    wal_payload_common::led::init_pair("COM2", "COM3");
     log!("chuni: slider on COM1, LED boards on COM2 / COM3");
 }
 
@@ -401,7 +401,7 @@ pub(crate) fn init() {
     alib_debug();
     wal_payload_common::amex::set_eeprom_write_filter(eeprom_write);
     serial::install_streaming("COM1", slider, slider_scan);
-    crate::led::init_pair("COM10", "COM11");
+    wal_payload_common::led::init_pair("COM10", "COM11");
     jvs_board::set_switches_hook(switches);
     server::init();
     log!("chuni: slider on COM1, LED boards on COM10 / COM11, air sensors on the JVS switches");
