@@ -25,7 +25,7 @@ emulating each cabinet's I/O, dongle and network services in the game process.
 * Documentation: [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) (implementation),
   [DESIGN.md](DESIGN.md) (research notes)
 
-## Games (370)
+## Games (402)
 
 Status: as verified by hand (docs/IMPLEMENTATION.md). Regression test: the game's latest
 automated run (started, still running, a window, a picture, sound; attract mode, coin and start
@@ -127,6 +127,8 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `ultra-street-fighter-4` | Ultra Street Fighter 4 | nesica | works (user: 100%), opening video | not in the test |  |
 | `vampire-savior` | Vampire Savior: The Lord of Vampire | nesica | works (user) | not in the test |  |
 | `yatagarasu` | Yatagarasu: Attack on Cataclysm | nesica | works (user: 100%), fullscreen with its side portraits, Japanese text | not in the test |  |
+| `magicians-dead` | Magician's Dead | nesica2 | works (user: 100%), NESiCA cards (new card registration, the loader's game server: profile and plays saved), tutorial and missions with computer players; Leap Motion hand from the right stick, the mouse or the touchpad | not in the test |  |
+| `street-fighter-v` | Street Fighter V Type Arcade | nesica2 | works (user: 100%), NESiCA card (registration, play records saved), free play, arcade against the computer (one player per cabinet) | not in the test |  |
 | `million-arthur-arcana-blood` | Million Arthur Arcana Blood | nesica2 | works (user: 100%: training and story modes), NESiCA network connected | not in the test |  |
 | `kof-xiv` | The King of Fighters XIV | nesica2 | works (user: 100%), NESiCA network connected | not in the test |  |
 | `snk-heroines` | SNK Heroines Tag Team Frenzy | nesica2 | works (user: 100%), NESiCA network connected | not in the test |  |
@@ -134,6 +136,7 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `samurai-shodown-180` | Samurai Shodown (1.80.00) | nesica2 | works (user: 100%), NESYS offline; a red banner ただいまネットワークを使ったプレイができません。 (network play unavailable) stays on screen: the game's own offline notice | not in the test |  |
 | `fighting-ex-layer` | Fighting EX Layer | nesica2 | in game (user: card accepted, game starts), NESiCA network connected; card saved (user: name shown, no freeze after a match) | not in the test |  |
 | `theatrhythm-final-fantasy-all-star-carnival` | Theatrhythm Final Fantasy All-Star Carnival | nesica2 | works (user: 100%), NESiCA cards (loader's card server, progress saved), touch screen (mouse, red pointer); right lever on I/J/K/L; no matching with other cabinets | not in the test |  |
+| `tetote-x-connect` | Tetote X Connect | nesica2 | works (user: 100%), NESiCA cards (loader's title server, progress saved), touch screen (mouse, touchpad multi-touch); no camera (pose phases play without it) | not in the test |  |
 | `3d-cosplay-mahjong` | 3D Cosplay Mahjong | typex | in game (mahjong hand) | not in the test |  |
 | `battle-fantasia` | Battle Fantasia | typex | works (user: 100%) | not in the test |  |
 | `cyber-diver` | Cyber Diver | typex | works (user: 100%) | not in the test |  |
@@ -252,6 +255,7 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `lady-luck` | Lady Luck | ringedge | works (user: 100%) | not in the test |  |
 | `sonic-dash-extreme` | Sonic Dash Extreme | seganu | headless tests (2026-11-08): attract, coins, start, character select, play, tickets dispensed during play and at the end, back to attract, test menu and back; not user-verified | not in the test |  |
 | `luigis-mansion-arcade` | Luigi's Mansion Arcade | seganu | user (2026-11-08): "game is working perfect" (aim, start, play); headless tests: attract, coins, service, free play from a blank backup | not in the test |  |
+| `project-diva-arcade-future-tone` | Hatsune Miku Project DIVA Arcade Future Tone | seganu | user (2026-11-16): "game working 100%" (picture, sound, play); headless tests: startup checks, attract (3D PVs), touch, new Aime card registration, a song played to its result (level up saved), next stage | not in the test |  |
 | `mario-and-sonic-at-rio-2016-olympic-games` | Mario & Sonic at the Rio 2016 Olympic Games | alls | headless tests (2026-11-08): power-on test, attract, coins, mode / character / event select, 100m race to the result, test menu input test; user (2026-11-08): Aime name registration, two card sessions, the save kept | not in the test |  |
 | `initial-d-arcade-stage-zero` | Initial D ARCADE STAGE Zero | alls | user 100% (2026-11-10), English option user OK; headless tests: attract, guest story race, new Aime player (registration, team, car, race, saved), returning player loaded, test menu network test | not in the test |  |
 | `initial-d-arcade-stage-zero-ver-2` | Initial D ARCADE STAGE Zero Ver.2 | alls | user 100% (2026-11-10), English; headless tests: guest race, new Aime player saved, returning player loaded | not in the test |  |
@@ -269,6 +273,13 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `crossbeats-rev-sunrise` | crossbeats REV. SUNRiSE | alls | user (2026-11-12): "the game seem to work perfectly" (mouse touch, red dot, Aime login with PIN, profile load); headless tests: boot, ALL.Net, game server tables, coins, touch, card sign-up | not in the test |  |
 | `wonderland-wars` | Wonderland Wars | alls | user (2026-11-13, desktop): boots, touchpad pen OK, guest play; headless: power-on and network tests, shader cache | not in the test |  |
 | `chunithm-superstar` | CHUNITHM SUPERSTAR | alls | not running (2026-11-09): protected executables, amdaemon dies under Wine (direct system calls) | not in the test |  |
+| `chunithm-new` | CHUNITHM NEW!! | alls | user (2026-11-16, desktop): "game working 100%" (mouse with red dot, menus, Aime card); headless: power-on from a fresh backup, card login, new player, tutorial with the slider; with SEGAguide's unpacked 2.02 executables (the dump's are protected) | not in the test |  |
+| `ongeki` | O.N.G.E.K.I. | alls | headless tests (2026-11-15): power-on test, attract, new Aime player (registration, name entry, news, story chapter 0) | not in the test |  |
+| `ongeki-plus` | O.N.G.E.K.I. PLUS | alls | headless tests (2026-11-15): power-on, new Aime player, story, tutorial song (55-60 FPS) | not in the test |  |
+| `ongeki-summer` | O.N.G.E.K.I. SUMMER | alls | headless tests (2026-11-15): power-on, new Aime player, story, tutorial song (57-60 FPS) | not in the test |  |
+| `ongeki-bright-memory` | O.N.G.E.K.I. bright MEMORY | alls | headless tests (2026-11-16, dump 1.45): boot, title server (data 1.45.00, options A001-A028), new Aime player (name entry, login bonus, story, tutorial song) to the save | not in the test |  |
+| `ongeki-re-fresh-152` | O.N.G.E.K.I. Re:Fresh 1.52 | alls | headless tests (2026-11-15): boot, title server (data 1.50.00, plain requests), new Aime player to the save | not in the test |  |
+| `kemono-friends-3-planet-tours` | Kemono Friends 3 Planet Tours | alls | user (2026-11-16, desktop): "game 100% working"; headless: self test, attract, new Aime player (name, tutorial, card printed, saved), returning player, card scene, battle | not in the test |  |
 | `teratoma` | Teratoma: The Last Rebellion | ringedge | works (user: 100%) | not in the test |  |
 | `chaos-code-ringwide` | Chaos Code (RingWide) | ringedge | works (user: 100%) | not in the test |  |
 | `ko-drive` | K.O. Drive | ringedge | works (user: 100%) | not in the test |  |
@@ -290,7 +301,8 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `grid` | GRID | europar | works (user: 100%) | not in the test |  |
 | `daytona-championship-usa` | Daytona Championship USA | europar | works (user: 100%); the manual gearbox not engaged (the race in automatic) | not in the test |  |
 | `daytona-championship-usa-new-season-edition` | Daytona Championship USA New Season Edition | europar | works (user: 100%); the manual gearbox not engaged (the race in automatic) | not in the test |  |
-| `men-in-black` | Men In Black | europar | works (headless test; user played on the desktop) | not in the test |  |
+| `men-in-black` | Men In Black | europar | works (headless test: attract, coins and free play, both players, guns aimed and shooting; user played on the desktop) | not in the test |  |
+| `mission-impossible-arcade` | Mission: Impossible Arcade | europar | works (headless test: attract, coins and free play, both players, guns aimed, both triggers shooting in a mission, mission 3 and a later stage chosen) | not in the test |  |
 | `nobiteke-byon-byon` | Nobiteke! Byon Byon Daisakusen | konami | works (user: 100%) | not in the test |  |
 | `gashaaaan` | Gashaaaan | konami | works (headless test) | not in the test |  |
 | `gashaaaan-refill` | Gashaaaan Refill! | konami | works (user: 100%) | not in the test |  |
@@ -371,7 +383,7 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `top-gun-2` | Top Gun 2 | arcadepc | works (headless tests 2026-11-04: coins, start, aim and shots scoring, operator menu; user: display, crosshairs; 2026-11-05 user: levels full screen in landscape), 2 camera guns, landscape option | not in the test |  |
 | `galaxian-3` | Galaxian 3 | arcadepc | user 100% (2026-11-09), 4 guns (of the cabinet's 6) | not in the test |  |
 | `burning-striker` | Burning Striker | arcadepc | user 100% (2026-11-09), 2 players (stick, 3 buttons) | not in the test |  |
-| `come-on-baby` | Come on Baby! | arcadepc | user 100% (2026-11-09), 2 players (stick, 2 buttons, start) | not in the test |  |
+| `come-on-baby` | Come on Baby! | arcadepc | user 100% (2026-11-14), 2 players (stick, 2 buttons, start) | not in the test |  |
 | `come-on-baby-2` | Come On Baby! 2 Winter Championship | arcadepc | user 100% (2026-11-09), 2 players (stick, 2 buttons, start) | not in the test |  |
 | `robin-hood` | Robin Hood | arcadepc | user 100% (2026-11-09), 1 gun | not in the test |  |
 | `akuma-mortis-immortal` | Akuma Mortis Immortal | arcadepc | user 100% (2026-11-09), 2 guns | not in the test |  |
@@ -403,9 +415,29 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `monsterous` | Monsterous | arcadepc | user 100% (2026-11-12), 1 player | not in the test |  |
 | `rerave` | ReRave | arcadepc | user 100% (2026-11-12), 1 touch (players 1 and 2 on it) | not in the test |  |
 | `deathsmiles-ii` | Deathsmiles II | arcadepc | user 100% (2026-11-12), 2 players | not in the test |  |
+| `omatsuri-yasan-kingyo-sukui` | Omatsuri Yasan Kingyo Sukui | arcadepc | user 100% (2026-11-15), 1 player | not in the test |  |
+| `omatsuri-yasan-ganso-takoyaki` | Omatsuri Yasan Ganso Takoyaki | arcadepc | user 100% (2026-11-15), 1 player | not in the test |  |
+| `quake-arcade-tournament-edition` | Quake: Arcade Tournament Edition | arcadepc | user 100% (2026-11-15), 1 player | not in the test |  |
 | `dream-hunting` | Dream Hunting | arcadepc | user 100% (2026-11-12), 1 gun | not in the test |  |
 | `photo-finish-racing` | Photo Finish Racing | arcadepc | user 100% (2026-11-12), 3 players | not in the test |  |
 | `house-of-the-dead-overkill` | The House of the Dead: Overkill | arcadepc | user 100% (2026-11-10), 2 guns | not in the test |  |
+| `left-4-dead-survivors` | Left 4 Dead: Survivors | nesica | user 100% (2026-11-16), NESiCA card (new player, CPU play), mouse and pad | not in the test |  |
+| `groove-coaster-2` | Groove Coaster 2: Heavenly Festival | nesica | user 100% (2026-11-16), boosters, NESiCA card (registration, saves), free play | not in the test |  |
+| `mario-and-sonic-at-tokyo-2020-olympic-games` | Mario & Sonic at the Tokyo 2020 Olympic Games | alls | user 100% (2026-11-08) | not in the test |  |
+| `house-of-the-dead-scarlet-dawn` | The House of the Dead: Scarlet Dawn | alls | user 100% (2026-11-08), 2 guns | not in the test |  |
+| `sega-world-drivers-championship` | Sega World Drivers Championship | alls | user-tested (2026-11-08): power-on test all GOOD, card registration with name entry, a race, the save, the returning player's licence | not in the test |  |
+| `initial-d-the-arcade-season-3` | Initial D THE ARCADE Season 3 | alls | user 100% (2026-11-09), online: Aime cards, saves, story and time trial | not in the test |  |
+| `initial-d-the-arcade-season-5` | Initial D THE ARCADE Season 5 | alls | headless tests (2026-11-11): attract, story and time trial races to the finish; user: races slow on an integrated GPU (the game runs one physics step per frame), box test pending | not in the test |  |
+| `chrono-regalia` | Chrono Regalia | alls | user 100% (2026-11-10): guest and Aime card play | not in the test |  |
+| `xtom-3d` | Xtom 3D | arcadepc | user 100% (2026-11-09) | not in the test |  |
+| `sega-rally-2` | Sega Rally 2 | arcadepc | user 100% (2026-11-12), wheel | not in the test |  |
+| `cut-the-rope` | Cut The Rope | arcadepc | user 100% (2026-11-13) | not in the test |  |
+| `go-go-drummer-babe` | Go Go Drummer Babe | arcadepc | user 100% (2026-11-13) | not in the test |  |
+| `radikal-bikers` | Radikal Bikers | arcadepc | user 100% (2026-11-14) | not in the test |  |
+| `project-diva-arcade` | Hatsune Miku Project DIVA Arcade | ringedge | user 100% (2026-11-15, desktop) | not in the test |  |
+| `border-break-scramble` | Border Break Scramble | ringedge2 | user (2026-11-15): "working 100% excluding online mode" | not in the test |  |
+| `kancolle-arcade` | KanColle Arcade | seganu | user 100% (2026-11-15): guest and Aime card play | not in the test |  |
+| `crossbeats-rev` | crossbeats REV. | alls | user 100% (2026-11-16, desktop): mouse with the red dot, touchpad multi-touch | not in the test |  |
 <!-- GAMELIST END -->
 
 ## Thanks

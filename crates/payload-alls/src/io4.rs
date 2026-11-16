@@ -26,6 +26,7 @@
 //!   or held on kp1-kp6 (an H shifter's positions).
 //! - `chusan` (CHUNITHM SUPERSTAR): the six air sensors (`chuni::hand`); the slider is the
 //!   game's (COM1).
+//! - `ongeki` (O.N.G.E.K.I.): the ten buttons and the lever on adc 0 (`ongeki.rs`).
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -71,6 +72,7 @@ enum Board {
     Swdc,
     Idac,
     Chusan,
+    Ongeki,
 }
 
 fn board() -> Board {
@@ -80,6 +82,7 @@ fn board() -> Board {
         "swdc" => Board::Swdc,
         "idac" => Board::Idac,
         "chusan" => Board::Chusan,
+        "ongeki" => Board::Ongeki,
         _ => Board::Tokyo,
     })
 }
@@ -89,8 +92,17 @@ fn board() -> Board {
 /// cabinet has no start button), for the automatic Aime card.
 pub(crate) fn start_pressed(p1: &wal_protocol::StickState) -> bool {
     static HKB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let hkb = *HKB.get_or_init(|| std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| v.trim() == "hkb"));
-    p1.pressed(b::START) || (board() == Board::Idac && p1.axis_u16(Axis::Accel) >= 0x8000) || (hkb && p1.pressed(b::B1))
+    // hkb, cxb (crossbeats: no start button, the screen touched): the gun's or mouse's touch
+    let hkb = *HKB.get_or_init(|| std::env::var("WAL_ALLS_BOARD").is_ok_and(|v| matches!(v.trim(), "hkb" | "cxb")));
+    p1.pressed(b::START) || (board() == Board::Idac && p1.axis_u16(Axis::Accel) >= 0x8000) || (hkb && p1.pressed(b::B1)) || (board() == Board::Chusan && slider_touched(p1))
+}
+
+/// CHUNITHM's start (no start button: the slider touched): its keys and air (the d-pad, buttons
+/// 1-8), the sticks, the touch surface, the mouse's touch (`kp0`).
+fn slider_touched(p1: &wal_protocol::StickState) -> bool {
+    let keys = b::UP | b::DOWN | b::LEFT | b::RIGHT | b::B1 | b::B2 | b::B3 | b::B4 | b::B5 | b::B6 | b::B7 | b::B8 | b::KP0;
+    let stick = |x: Axis, y: Axis| (p1.axis(x) as i32).pow(2) + (p1.axis(y) as i32).pow(2) >= 16384 * 16384;
+    p1.buttons & keys != 0 || stick(Axis::LeftX, Axis::LeftY) || stick(Axis::RightX, Axis::RightY) || !wal_payload_common::touches().is_empty()
 }
 
 /// The switches of players 1 and 2 from the virtual sticks.
@@ -126,6 +138,10 @@ fn switches() -> [u16; 2] {
                 sw[i % 2] |= 1 << bit;
             }
         }
+        return sw;
+    }
+    if board() == Board::Ongeki {
+        crate::ongeki::switches(&mut sw);
         return sw;
     }
     if board() == Board::Idac {
@@ -188,7 +204,8 @@ fn report() -> [u8; 64] {
     // the games share the chutes)
     let coin = (input(0).buttons | input(1).buttons) & b::COIN != 0;
     if coin && !COIN_HELD.swap(true, Ordering::Relaxed) {
-        COINS.fetch_add(1, Ordering::Relaxed);
+        let n = COINS.fetch_add(1, Ordering::Relaxed) + 1;
+        log!("io4: coin {n}");
     } else if !coin {
         COIN_HELD.store(false, Ordering::Relaxed);
     }
@@ -201,6 +218,9 @@ fn report() -> [u8; 64] {
         for (i, v) in adc.iter().enumerate() {
             r[1 + i * 2..3 + i * 2].copy_from_slice(&v.to_le_bytes());
         }
+    }
+    if board() == Board::Ongeki {
+        r[1..3].copy_from_slice(&crate::ongeki::lever().to_le_bytes());
     }
     let sw = switches();
     r[29..31].copy_from_slice(&sw[0].to_le_bytes());
@@ -284,7 +304,17 @@ pub(crate) fn write(data: &[u8]) {
     match data[1] {
         0x01 | 0x02 => SYSTEM_STATUS.store(0x30, Ordering::Relaxed),
         0x03 => SYSTEM_STATUS.store(0x00, Ordering::Relaxed),
-        0x04 | 0x05 | 0x41 => {}
+        0x04 => {
+            // the general outputs (the lamps, the coin blocker): their changes logged
+            static LAST: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+            let outputs = data[2..data.len().min(6)].to_vec();
+            let mut last = LAST.lock().unwrap();
+            if *last != outputs {
+                log!("io4: general outputs {outputs:02x?}");
+                *last = outputs;
+            }
+        }
+        0x05 | 0x41 => {}
         cmd => log!("io4: command {cmd:#04x}"),
     }
 }

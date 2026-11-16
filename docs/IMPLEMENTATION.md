@@ -805,9 +805,118 @@ import it statically, so it loads before the game entry point: no injector neede
   replies built with the `Out` helper following the C struct layouts (sizes documented next to
   each reply). Card data: `card_<id>_<type>.bin` in the D: data folder. `WAL_NESICA_NESYS=0`
   disables it; network values via `WAL_NESICA_IP/_MASK/_GATEWAY/_DNS`. AH2 does not use it.
-* Not ported (yet): `GetIfEntry` hook, NESYS HTTP access (Groove Coaster), game-specific
+* Not ported (yet): `GetIfEntry` hook, game-specific
   patches from `NesicaGeneric.cpp`. Games also try the NESiCAxLive launcher pipe
   (`\\.\pipe\NxLPipe...`); nobody emulates it and the games tested do not need it. Game detection by CRC is not needed: the profile says which game it is.
+
+#### Left 4 Dead: Survivors (Type X3)
+
+Taito / Valve, 2014: the Source engine (`left4dead2.exe`, 32-bit, Direct3D 9). The engine's
+`bin\inputsystem.dll` reads the whole cabinet and loads `bin\iDmacDrv32.dll` itself
+(`payload_install: [bin/iDmacDrv32.dll]`). Each device missing gives a "call the staff" screen;
+the profile enables what each needs:
+
+* **NESiCA reader** (COM2, opened by `inputsystem.dll`: `WAL_NESICA_RFID_MODULES`, the serial
+  hooks on that module too). The reader thread first reads a 16-byte key from
+  `C:\TypeX3Temp.dat` (absent: the thread stops before sending anything, "NESiCA reader
+  error"), then between polls sends the board a challenge on JVS node `0x80 | n`
+  (`WAL_NESICA_RFID_SECURITY=1`, `rfid.rs` `security`: the key file created with zeros when
+  missing). The reply is a word and a 16-bit seed: the word XORed with the second output of the
+  LCG `x * 0x2253 + 0x11D7` (`>> 11`) seeded with it must have `key[i & 15]` as its low byte,
+  `i` the last challenge byte. Two failed answers in a row stop the reader. Its commands differ
+  from the other NESiCA games' reader (same option): `32 n ...` drives the lamp (a report only),
+  `26 01` is the presence (one byte, 0x19 with a card), `61` reads the card (8 header bytes and
+  the 16-character id). `WAL_NESICA_CARD_AUTO=1` (set by the launcher whenever the GUI's NESiCA
+  card exists, `nesica_card.rs`, as the Sega games' Aime card): the card always on the reader.
+* **Card server**: NESiCA needs `+arcade_NESiCA_Accept 1` (the dump's operator setting is 0:
+  "NESiCA cannot be used now"). The game then sends NESYS CARD_SELECT data type 1 and hands the
+  reply's data to its `getCardInfo` parser (`CZet_net_HttpParse_getCardInfo`): newline-separated
+  positional fields (result below 100, API id, card id, player id, UTF-8 name, title, level,
+  classes, clan, home arcade, character, avatar parts with conditional resource/color lines,
+  skill items, weapons, experience, logins...). Zeros: "the NESiCA could not be read", read again
+  every 7 s. `WAL_NESYS_NEW_CARD=l4ds` answers a card without a save with a new level 1 player
+  (`nesys.rs` `new_card`, name `WAL_NESICA_PLAYER_NAME`); a saved `card_<id>_1.bin` wins. Whether
+  the game saves its player back (CARD_UPDATE or its HTTP `update_player`) is not verified.
+* **FastIO** (`WAL_FASTIO_REGS=<reg>:<hex>,...`, fixed register values): 0x4000's top byte must
+  be 1 (the universal board on the hub, else I/O error 2-1), 0x4150's low word the board's
+  firmware 0x8258 (2-3); a second board in 0x4004 is an error (1-3). Start is its "ENTER
+  BUTTON", which the title ignores.
+* **Gun** (a USB mouse): `SetupDiGetClassDevsA(NULL, "HID")` must list a device of class
+  `Mouse` (I/O error 4): `hidmouse.rs` (`WAL_NESICA_HID_MOUSE`) answers that enumeration of the
+  module with one. The mouse itself (`mouse.rs`, `WAL_NESICA_MOUSE`): `inputsystem.dll`
+  subclasses the game window, takes the cursor from `WM_MOUSEMOVE` and recenters it each frame
+  with `SetCursorPos` (the look is the motion from the center), and sets every button from the
+  `MK_` flags of any button message. The real keyboard and mouse are dropped from both message
+  loops (`inputsystem.dll`'s and `engine.dll`'s, `input_filter`); the payload's
+  `SetCursorPos` only moves its own center, and it posts the right stick's motion (or the
+  mouse's, as a trackball on the pedal axes, the profile's `mouse_wrap`) as cursor moves from it,
+  the virtual buttons (`WAL_NESICA_MOUSE_BUTTONS`, `MOUSE1`-`MOUSE5`) as `WM_LBUTTONDOWN` flags,
+  wheel notches (`WAL_NESICA_MOUSE_WHEEL`, the item change). The menus point and click with
+  the same cursor (from the window's center, kept inside it).
+* **Grip** (a USB joystick, `grip.rs`, `WAL_NESICA_GRIP`): without a winmm joystick, I/O error
+  3 (the engine's joystick check: `inputsystem.dll` counts a missing joystick up from 120 unless
+  started with `-arcadeIO_InitializeSkip`, which also skips the FastIO and the reader).
+  Joystick 0 of the module's winmm imports is player 1's left stick (X/Y 0..65535) with
+  `WAL_NESICA_GRIP_BUTTONS` as `JOY1`...: the "Joy" controller configuration
+  (`cfg\ArcadecontrollerA_Joy.cfg`: JOY8 jump, the title's and menus' decide; JOY9 duck; JOY10
+  flashlight). With XInput the game would take `_XCtr`, with neither `_Org`.
+
+`-console` of the cabinet's `load_survivors.bat` is left out (the console opened over the
+title); `-w`/`-h` the screen's size. Free play (`WAL_FREEPLAY`) gives the SVP (play time)
+purchase for free; NESYS online works (green icon). Verified headless: boot, attract, title,
+character select and SVP purchase with the cursor, a stage played (aim, attack, first mission
+cleared).
+
+#### Groove Coaster 2: Heavenly Festival (Type X3)
+
+Taito, 2015 (RHYTHMVADERS 2), `game.exe` 2.06.01 (32-bit, Direct3D 9, portrait 720x1280; the
+dump's `game.exe` is the decrypted build, `game.exe.original` the encrypted one, the dump's
+`dinput8.dll` hidden). Profile `nesica/groove-coaster-2`, `WAL_NESICA_GAME=groovecoaster`
+(`groovecoaster.rs`, `groovecoaster_server.rs`):
+
+* **Screen.** A 720x1280 window, then a 720x1280 full screen `Reset` that no monitor mode
+  matches (`GW_ERR_DX_DEVICE`, `PCMain.cpp` 403): the Sonic Dash Extreme set
+  (`WAL_D3D9_WINDOWED_SIZE`, `WAL_D3D9_KEEP_WINDOW`, `WAL_D3D9_ASPECT=9:16`, a popup window),
+  black strips beside it (`WAL_BEZEL=black`).
+* **Cabinet link.** The LAN thread (UDP 60100) names the cabinet after the last two bytes of
+  the first adapter's MAC (`GetAdaptersInfo`, as hex text): 0 (a VPN or bridge adapter listed
+  first under Wine) keeps the main thread waiting before the first frame. The game sees one
+  adapter, the first with an IP address, with the NESYS MAC `DE:AD:BA:BE:CA:FE`.
+* **DirectInput.** Its debug pad enumeration hung the boot: `WAL_DINPUT_DISABLE=1`.
+* **NESiCA reader** (COM2, the Xio bus, node 1): the Type X3 reader with its security
+  (`WAL_NESICA_RFID_SECURITY=1`), the key read from `C:\TypeXZEROTemp.dat`
+  (`WAL_NESICA_RFID_KEY_FILE`); without it error 302.
+* **NOTICE forever.** The NESYS thread starts NESiCAxLive's update downloader once certified
+  (`TtxUDLSetInterval` / `TtxUDLInit` of `TtxUpdateDownloader.dll`): under Wine it waits forever
+  on a lock of the DLL (an `RtlpWaitForCriticalSection ... blocked by 0000` every 60 s), the
+  NESYS thread stops, the attract never leaves NOTICE. Its six imports are answered by the
+  payload (started, status idle: no update delivery).
+* **Boosters** (two sticks with a button on top, one player): FastIO 0x4120 (the game's
+  `GWInputDeviceXioFio_BOOST`, FastIO firmware 0x823C path: the word's bits 12-17 moved to
+  16-21). The test menu's I/O test: left booster up / down / left / right = player 1 up,
+  player 2 up, player 1 down, player 2 down, its button player 1 button 1; right booster = player
+  1 left, player 2 left, player 1 right, player 2 right, its button player 2 button 1; Select =
+  player 1 start, Enter = player 2 start; coin, service, test as usual. All from player 1's
+  virtual stick (`groovecoaster::switches`, replacing 0x4120's switches): the d-pad or left stick
+  and b1 the left booster, the right stick or b5-b8 and b2 the right one, start Enter, b3 Select.
+* **Free play** (the common option, declared in the profile): the game is in free play when
+  the coins per credit setting is 0, asked of one function (+0x203450): `mov al, 1; ret`.
+* **Card server** (`groovecoaster_server.rs`, the Groove Coaster card server's types and answers,
+  GC-local-server-rewrite): NESYS card select = read (`<root><info>..</info><data>..</data>`
+  documents, data type), card update = write, card insert = registration. Unregistered card:
+  read 259 answers 23, the reissue test 27 (no reissue: else "this IC card is scheduled to be
+  reissued"), then the name entry and the insert (its fields saved as sent: `fcol3` 20601 is the
+  game's version, a card without it is offered the RHYTHMVADERS EX data transfer). Saves in
+  `D:\groovecoaster\<card id>\`: `card.xml` (259, write 771), `detail_<pcol1>_<pcol2>_<pcol3>.xml`
+  (260 one, 261 all, write 772), `bdata.xml` (264, write 776). Everything unlocked: avatars,
+  items (90 each), skins, titles (418/420/422/424, counts from `data/boot/*.dat`), the songs of
+  `data/boot/stage_param.dat` (428, `music_id` / `release_date`), coins 900000 (468); sessions
+  401 / 402 the card server's fixed session; navigator, event reward, extra / AOU songs empty;
+  the other writes (929-980) acknowledged. Rankings (NESYS 0x13) answer none.
+
+Verified headless: boot, attract, test menu and I/O test, free play, guest play (tutorial,
+song select, songs), a new card (registration, name entry), a full credit with the card (song
+records and settings saved) and the returning card.
 
 ### 6.2b NESiCAxLive 2 (system `nesica2`, `crates/payload-nesica/src/nxl2.rs`)
 
@@ -977,6 +1086,117 @@ income mode 0x20, and (Million Arthur) HTTP posts 0x1B; later 0x4 game start, 0x
 * D:\ (settings, bookkeeping, logs) through mono.dll's file functions (`drive::redirect_module`).
 * The dump's `Assembly-CSharp.dll` is another loader's modified build (free play, checks
   removed, data in `.\`): the profile installs `Assembly-CSharp_org.dll` (the original) instead.
+
+**Tetote X Connect (Unity 2018.4 Mono, 64-bit, `tetote.rs`).** `Vision.exe`, a portrait
+1080x1920 touch screen rhythm game. The payload is loaded at the entry point (`payload_loader`,
+`WAL_DESKTOP_SIZE: 1080x1920`) and answers the plugins' DllImports through `mono_imports`:
+* `VisionUSBIO.dll`: the I/O board (`IOBUFFER`: InPort bits Coin 0x8000, Service 0x2000, Test
+  0x1000, Enter 0x400, Select 0x800; `Coin`/`CoinDec` handshake: the coins the game consumed taken
+  off the counter at once) and its NESiCA reader (`RFID_ID`: 16 ASCII digits, then UID and AMIC
+  code zeroed). The auto card is on the reader for 15 s after a touch only: the title polls the
+  reader all along.
+* `SimpleNesys.dll`: Theatrhythm's (`theatrhythm_nesys.rs`, dispatching on `tetote::active()`):
+  the certificate's `game_server` is the payload's title server (`tetote_server.rs`,
+  `127.0.0.1:37703`, out of the launchers' input ports); maintenance time -3 (-2 is "maintenance
+  will begin shortly" in this game).
+* `GWSafeFileDLL.dll`: named strings as files of `tetote/system` (`ReadStr` returns a
+  `CoTaskMemAlloc` string, Mono frees it); `SettingValueJson`'s `OperationMode` from the common
+  free play, `LanguageSelectEnable` from `WAL_TETOTE_LANGUAGE_SELECT`. `DeviceCheck.dll`: the
+  touch panel connected.
+* Managed code (thread started at the first `mono_add_internal_call` of UnityPlayer's
+  `GetProcAddress`): `DepthCam2.IsCameraConnected` / `get_hasCameraProblems` IL made false,
+  `DepthCamera.get_hasCameraProblems` replaced in its compiled code (its IL `ldc.i4.1; ret` is one
+  body shared by every `=> true` method: never patch such IL), `DepthCamera.Start`,
+  `AeroBootCheck.CheckAndReset` and `ScreenObserver.Update` (full screen + display rotation every
+  second) replaced. The pose phases play without the camera.
+* Touch: Unity 2018's Windows player reads `WM_TOUCH` (`RegisterTouchWindow`,
+  `GetTouchInputInfo`, `CloseTouchInputHandle` resolved at run time; `GetSystemMetrics`
+  `SM_DIGITIZER`/`SM_MAXIMUMTOUCHES` must report a ready multi-touch digitizer). The payload posts
+  up to 10 fingers per message in the fake desktop's units (Unity takes the `ScreenToClient` point
+  in its own 1080x1920 client): players 1-2's guns with `b1`, and the launcher's touch points
+  (`input.touch`; the whole touchpad is the picture, `WAL_TETOTE_TOUCH=screen` for a
+  touchscreen), ids kept by nearest-finger matching.
+* Title server: env, login (token `wal-<card>`), savedata (empty for a new card: the game creates
+  the player and asks a name), the saves' changed parts merged by key at savedata / tutorial/end /
+  game/end / purchase, `tetote/players/<card>.json`.
+
+**Magician's Dead (Unreal Engine 4.12, 64-bit, `magiciansdead.rs`, `leap.rs`,
+`magiciansdead_server.rs`).** No `NxL2Core.dll`. The cabinet is three devices, all the payload:
+* I/O board: `BppGame\Binaries\Win64\MAGIDEIO.dll` (`LoadLibraryW` + `GetProcAddress`), replaced
+  by the payload (`payload_install`, started by wal-loader: NESYS pipe and input filters before
+  the game). `MAGIDEIO_Update(buf)`: +0 status 0x200 (else I/O error), +0x12 / +0x10 the 16 USBIO
+  keys from bit 0 (lever up, down, left, right, switches 1-6, START, DUMMY1, TEST, SERVICE, COIN2,
+  COIN1), +0x18 / +0x1A coin counters, +0x34 the NESiCA reader (0x11: a card, its 16 characters at
+  +0x3C); the game requests a read with bit 0x40 of +0x74 (`WAL_NESICA_CARD_AUTO` then inserts the
+  card). `GetStatus` 0x200.
+* Grip controller (left hand): an XInput pad (the executable's `XINPUT1_3` ordinals 2 / 3
+  hooked): stick, lower button A (jump), upper button LB (lock-on, the menus' decide), L3.
+* Leap Motion (right hand): `Leap.dll` (Leap SDK 3.2 C++ API, delay loaded by the plugin) is
+  the payload too (`LoadLibrary*` of the executable answered with its module): the 223 imports
+  exported under their MSVC names (x64 only: i686 `ld` cannot export them). Objects are the SDK's
+  `{vtable, m_object}` with `m_object` a value (kind, hand / finger / bone, list flags, frame
+  serial); frames are snapshots in a ring of 256, made on `Controller::frame` (the plugin's game
+  thread tick). The right hand is always over the sensor: palm to the screen, fingers up (the
+  attract's pose); its position the right stick, a mouse pointer (profile `gun` x/y -> rx/ry) or
+  the touchpad's first finger (`input.touch`), at most 250 mm/s (aiming never a speed gesture).
+  The skills read hand shapes through the plugin's detectors: the thumb flicked (bend and return
+  within 150 ms: detector +0x2856540 wants a value below -7 then above 6), the fist (grab, opened
+  on release), the L (thumb + index); fingers move at a curl speed (a shape changing at once is
+  dropped as noise). Touchpad: 2 / 3 / 4 fingers = thumb / fist / L. `WAL_LEAP_KEYS=1` also presses
+  the game's Leap keys itself (+0x2857fa0 press / +0x2858200 release, one `FKey` reference consumed).
+* The dump's executable is another loader's build: free play forced (settings byte +0xEA, read at
+  +0x762ACE, set at +0xF029D7: the common free play option written there) and NESiCA turned off
+  (the acceptance hours check +0x75F448 made "closed": the card read and ignored);
+  `WAL_MAGICIANS_NESICA=1` (default) puts the original `jge` back.
+* NESiCA: NESYS card select data type 0. `WAL_NESYS_REGISTER=1` (`nesys.rs`): a card without the
+  `card_<id>_registered` marker is unregistered (status 23), the reissue test answers no reissue
+  (27), the game asks "register this NESiCA?" and sends a card insert (the marker written). The
+  card data (status 1) is 3 characters skipped, then JSON parsed by the JSONQuery plugin:
+  `game_server` (host:port) and `user_id`: the payload writes `card_<id>_0.bin` pointing at its
+  game server.
+* Game server (`magiciansdead_server.rs`): TCP, u32 length + `PbMessage` of the game's
+  `message.proto` (its FileDescriptorProto is in the executable: `protoc --decode`): `Ping`,
+  `RequestLoginPlayer` (profile: id, card, name `WAL_NESICA_PLAYER_NAME`, play count, last played
+  character / mode, battle record), `RequestPlayerInfo` (characters, money, tutorial and mission
+  progress), `RequestSetFeeMode` / `RequestSetPlayMode` (`Response` Ok), `RequestEntryMatching`
+  (the character; the battle runs on the cabinet with computer players: a `NotifyMatchMade` made
+  the card screen's handler crash on a widget it no longer has), `RequestSaveResult` (play count,
+  results, character rank, missions, tutorials). Records `magiciansdead\<card>.json` in the D:
+  data folder. National matches between cabinets (dedicated servers) are not available.
+
+**Street Fighter V Type Arcade (Unreal Engine 4, 64-bit, `sfv.rs`).** No `NxL2Core.dll`: the
+game's USBIOPlugin loads Taito's USB I/O library `StreetFighterV\Plugins\USBIOPlugin\UIO_AMIC.dll`
+(cdecl exports, `GetProcAddress`), replaced by the payload (`payload_install`, started by
+wal-loader); its NESYS client is `Plugins\NESYSUtil\NESiCAUtilLib.dll` on the payload's pipe.
+* `UIO_AMIC_Update(buf)`: +0 status 0x200, +4 the input size 0x80, +0x10 / +0x12 the 16 USBIO
+  keys (Magician's Dead's layout: lever, buttons 1-6, START, TEST bit 12, SERVICE bit 13,
+  COIN1 bit 15), +0x11 / +0x13 a second word, active low (+0x13 bit 0 EX1, bit 1 EX2, bit 3 a
+  game pad on the board: all zero showed both EX buttons pressed and a pad), +0x18 the coin
+  counter, +0x34 the NESiCA reader (0x1A with the 16-character id at +0x3C; the 20-character AMIC
+  code at +0x6C left zero). The output report at +0x8C: bit 0x40 of +0xB4 asks a card read
+  (`WAL_NESICA_CARD_AUTO`). One player per cabinet (versus is cabinet to cabinet): CPU play.
+  Pad: punches X Y R1, kicks A B R2, EX1 / EX2 on L1 / L2.
+* NESiCAxLive deliveries: the executable mounts `<its drive>\Patch\TitlePlate.Pak` and
+  NESiCAUtilLib's title packs `\Patch\Patch.Pak`, `\Patch\patch_chara_stage.Pak`, `_2`-`_5`
+  (later characters and stages, the toon shader's data asset...). The dump's `Patch` folder at
+  `C:\Patch` (profile `c_folders`); without it the game reads null objects (TitlePlate's
+  `TypeXSpec` at +0x23719DE, the toon shader's data asset at +0x4F5EFD) and stops: the payload
+  logs the missing paks.
+* Text: Scaleform's font library is `fonts_<culture>`; the US locale's English one has no
+  Japanese glyph (empty boxes). `-culture=` is not read: the payload writes `Culture=ja` in the
+  saved `Engine.ini` (`%LOCALAPPDATA%\StreetFighterV\Saved\Config\WindowsNoEditor`).
+* Free play (`WAL_NESICA_FREEPLAY` / `WAL_FREEPLAY`): the settings loader reads `CoinCreditCoin`
+  (0 = the test menu's FREE PLAY, `IsFreePlay` = credit state +0x316 or event mode) with a call
+  at +0x236A5C6, made `xor eax, eax`.
+* NESiCA: `WAL_NESYS_REGISTER=1` (no reissue, unregistered, then "register this card?"). The
+  card server XML: the card insert (data type 1; `{id, type, u32, write type 515, size, XML}`)
+  carries the new card's `<data>`, saved as the card read's answer (type 259, `/root/card`);
+  type 261 reads `/root/card_detail/record` (`<offset>`, `<row_count>`; none for a new card), its
+  write 773 sends `<datas>` of `<data>` records merged by `pcol1`-`pcol3` (`xml_detail_write`);
+  264 / 776 `card_bdata` as Fighting EX Layer. The player name is the GUI card's
+  (`WAL_NESICA_PLAYER_NAME`).
+* Input: XInput (`xinput1_3` ordinals 2 / 3) answers no pad, DirectInput disabled, the real
+  keyboard and mouse filtered.
 
 **Million Arthur white screen (2026-10-11, offline only).** Not seen with NESYS online (user:
 training and story modes fine); offline (NESYS off), with DXVK the picture turns white at the
@@ -2507,6 +2727,49 @@ System `europar` (also `segaeuropa-r`), payload `wal_europar.dll` installed as `
   - *Lamps.* `RS232` opens the first port of `SerialPort.GetPortNames` at 19200 baud (lamp
     bytes): Mono's `RegOpenKeyExW` of `HARDWARE\DEVICEMAP\SERIALCOMM` fails (no port listed:
     Batocera's serial ports and Sinden guns untouched).
+- **Mission: Impossible Arcade (2020).** `Sega/MissionImpossible/MissionImpossible.exe`, Unity
+  2018.4 Mono, 64-bit, two players, each gun with two triggers: the same payload as Men In Black
+  (`WAL_EUROPAR_BOARD=mig`, `mib.rs`, `shell_mib.rs`'s `MIG` protocol).
+  - *Shell.* `ShellManager` connects to 127.0.0.1:18888 and quits without it: header `"MIG"`,
+    the operation, the length, the sequence number always 0, nothing acknowledged. Game ->
+    shell: 1 launched, 2 assets loaded, 3 attract, 6 start pressed (the player; a continue too),
+    27 security challenge (every 10 s, `AuthenticatedData`: Men In Black's scramble and key);
+    shell -> game: 65 credits (count, part credit, part credits per credit: 0 keeps the game's),
+    66 the answer, 68 quit. The game takes its credits itself (`CreditManager.Spend`) and a
+    count sent replaces its own: the payload sends it from attract on (`CreditManager` does not
+    exist yet at launch), counts the coins and takes one per start, none in free play.
+  - *Settings.* `..\ShellData\ShellData.ini` from the current directory (the game folder),
+    `GameSettings.ini` beside it: the profile's copy of the first (`files`), the calibration
+    0-4096 on both guns; `[Credit] Freeplay` written by the payload.
+  - *Guns.* `InputGun1` / `InputGun2` (chosen while the shell is connected) read
+    `Input.GetKey(KeyCode.JoystickButtonN)`: starts 5 / 6, left triggers 7 / 9, right triggers 8
+    / 10 (B1 / B2; either shoots, both together a faster burst, some minigames alternate them);
+    `GunAdjust` reads axes `p1y` / `p2y` as the screen's x and `p1x` / `p2x` as its y from the
+    top (-1..1 to 0..4096, then the calibration, unclamped). The wrapper's `GetKeyInt` /
+    `GetKeyDownInt` / `GetKeyUpInt` answer those key codes (no keyboard key), `GetAxis` the
+    guns (`2 * x - 1`, kept while off screen). The game draws its own crosshairs.
+  - *Camera.* The lobby's player photo is OpenCV's `VideoCapture(0)` through DirectShow: the
+    first video device, opened and set to 720x540 whatever `config.ini`'s `ENABLE_WEBCAM`
+    (`WebCamera.ConnectWebCam`; the flag only hides the picture). On Batocera that device is
+    a Sinden gun's camera, held by its driver: the Sinden cameras are hidden from its DirectShow
+    device list (payload-common `webcam::skip_sinden`, OpenCvSharpExtern's `CoCreateInstance`;
+    OpenCV 3.3.1 built without Media Foundation). Another webcam takes the photo; without one
+    the game shows the characters' pictures.
+  - *Missions and stages (`WAL_EUROPAR_UNLOCK`, on by default, a GUI option).* Missions 1 and
+    2 are open, mission 3 after one is cleared (`ConfigManager.Mission3Unlocked` is never set:
+    `GetConfigValue` returns its default, `config.ini` is read nowhere); a mission's stages are
+    played in order: the stage select shows the next one for 1.2 s and plays it. Once a frame
+    (the guns' axes) the payload opens the locked entries of `UISelectScreen.MissionsState`
+    and `StagesState` (0 locked, 1 open, 2 played), copied to the buttons when a select screen
+    fades in. The stage select's time is 10 s (the second `ldc.r4 1.2` of
+    `UISelectScreen.Update`, patched in its IL by a thread started at the first
+    `mono_add_internal_call`: Mono used earlier crashes). The stage buttons never take a shot
+    (the mission buttons, still behind them at the same places, take the 2D raycast of
+    `UISelectButton.CheckEntry2D`): between the shell's 33 (stage select entered, plus 1 s)
+    and 34 (chosen) a trigger pressed chooses the stage of its gun's third of the screen
+    (left, middle, right): `GameManager.SelectedStage` set (the stage played at the time's end,
+    and the click animation `UISelectScreen` waits for), `UIStageSelectInteract.PlayerClickN`
+    called (`Object.FindObjectOfType`).
 
 ### 6.3h Konami e-Amusement PC (`crates/payload-konami`)
 
@@ -5904,6 +6167,61 @@ entry point (`payload_loader`), the game's window messages filtered:
   data), free play on and off.
 - The user: 100% (2026-11-12, desktop).
 
+#### Omatsuri Yasan: Kingyo Sukui, Ganso Takoyaki
+
+Cave's kids' touch screen games (`cvgame.exe`, Direct3D 9, 32-bit, 1024x768 full screen):
+Kingyo Sukui (2009, goldfish scooping) and Ganso Takoyaki (2010, takoyaki cooking).
+`.windowsloader`: `cvgame.exe` (the dumps' `logo.exe` / `logo.exe1`, a boot logo, not run).
+Board `omatsuri` (`omatsuri.rs`), loaded at the entry point (`payload_loader`), the real
+keyboard and mouse filtered:
+
+- **Touch screen.** The game reads the touch's position with `GetCursorPos` (the payload's: the
+  gun or mouse of player 1 on the picture) and its touches as the DirectInput system mouse's
+  buffered left button events (`GetDeviceData`): the fake DirectInput (`WAL_DINPUT_DISABLE`),
+  whose system mouse now also reports its button changes as buffered events (`dinput.rs`,
+  `DIMOFS_BUTTONn`, before: `GetDeviceState` only). Its keyboard stays silent (the game's
+  debug keys: X a coin, Q / A / Z the board's switches).
+- **I/O board** (COM3, 9600 baud): 4-byte ASCII messages, read a byte at a time. Start:
+  `&***`, 9 bytes read (`&` and 8 serial number digits, then kept with the network adapter's
+  address). Board to PC, on change: `#XY ` (the inputs' byte in hex, active low: bit 4 the coin,
+  counted on release; bit 3 test, held 3 s for the test menu, which restarts when it is held there;
+  bit 2 a button; bit 1 service). PC to board: `%15n` the coin meter's pulses, `%16n` Ganso
+  Takoyaki's prize dispenser (`%161` pay one, answered `@***` 0.5 s later; `%160`).
+- **Machine check.** At the end of the boot the game reads `common.log` (32 bytes: marker
+  letters, the network adapter's address and the board's serial number; written at the first
+  boot from a blank template the dumps lack): without it, 20 tries a second apart, then error
+  11 (a black screen). The check returns at once when its flag is set (Kingyo Sukui
+  `0x5988d4`, Ganso Takoyaki `0x49b6fc`, each found by its `cmp dword [flag], 1`): set by the
+  payload.
+- **Meshes.** Wine's `d3dx9_36` fails the games' `.X` frame hierarchies
+  (`D3DXLoadMeshHierarchyFromXInMemory`: Kingyo Sukui crashed at its aquarium mesh, "Now
+  Loading 19%", a blue screen): the native one (`tricks: [d3dx9_36]`, `n,b`; added to the shared
+  prefix's verbs).
+- **Free play** (the common `WAL_FREEPLAY`, on by default): the games have no free play setting:
+  their credits are kept at 1 at least, the title then asks for a touch (Kingyo Sukui: the
+  game's count `0x5986b8`, added by the board's coin callback 0x4064f0, spent at the start
+  0x4204d6; Ganso Takoyaki: the board object's `+0xf4`, added by its coin callback 0x401600).
+  Off: one coin a credit.
+- **Test menu.** Test held 3 s: the TEST MENU (BOOKKEEPING, SPEAKER SETTINGS, GAME SETTINGS,
+  IO TEST, CLEAR ALL & RESTORE DEFAULTS, SYSTEM LOG), a white screen with a red cross in its top
+  left corner shown first at times. Its switches act on release (0x4228d0: the board object's
+  +0xef / +0xf0 / +0xf1 release flags): the button enters / confirms, service moves down, test
+  up. (The payload first held each test press 3.5 s: in the menu that restarted it.)
+  Ganso Takoyaki's IO TEST names its bits: TEST SW bit 2 (its test menu opens at once, the
+  switch enters in the menus), SERVICE SW bit 1 (down), TOUCHPANEL SW bit 3 (up), COINSHOOTER
+  (coins), TOUCHPANEL (the touch, ON while touched): the payload's test and button bits are
+  each game's (Kingyo Sukui: test bit 3, the button bit 2; Ganso Takoyaki: test bit 2, the
+  button bit 3, the touch panel switch).
+- **Pointer.** The common crosshair option (`WAL_CROSSHAIR`, on in the profiles): the dumps'
+  `P1.png` (a pink crosshair) drawn over the picture where the gun or mouse touches.
+- **Ganso Takoyaki's play.** The game pours the batter and the octopus itself; a touch on a
+  cell turns its ball with the pick, a golden ball dragged (touch held) onto the boat on the
+  right is served (the count, いま Nコ).
+- Verified headless (2026-11-15): Kingyo Sukui: boot, attract, coins (CREDIT 2), the touch
+  start, the mode select's cards by touch, a game (20 fish scooped, the boss), free play, the test menu (BOOKKEEPING entered);
+  Ganso Takoyaki: boot, attract, coins, free play's touch start, a game (9 takoyaki turned and dragged onto the boat).
+- The user: both 100% (2026-11-15, desktop; the profiles first lacked `guns_enabled`: no mouse attached).
+
 #### Radikal Bikers
 
 Gaelco's pizza delivery motorbike game (1998), the community Windows emulator of its Gaelco 3D
@@ -5934,6 +6252,54 @@ Board `radikalbikers` (`radikalbikers.rs`), loaded at the entry point (`payload_
   start, circuit and biker select, a race (accelerating, steering both ways), time out,
   CONTINUE?, GAME OVER, the test menu (input test, game assignments, handle adjust,
   bookkeeping kept across runs), free play over two games.
+
+#### Quake: Arcade Tournament Edition
+
+Lazer-Tron / LBE Systems' Quake cabinet (1998, 1.30 r3: GLQuake 1.07 with the arcade's
+accounting, menus, bots and tickets; OpenGL 640x480, 32-bit). `glquake.exe` is wrapped in its
+Sentinel dongle's protection; the dump's `glquake_decrypted.exe` (the same program without it)
+is the `.windowsloader`. Board `quakearcade` (`quakearcade.rs`), loaded at the entry point
+(`payload_loader`); the dump's 3dfx MiniGL `OPENGL32.DLL` hidden (Wine's OpenGL).
+
+- **Arguments.** `-nogci`: the GCI (Game Control Interface) serial board off, its `gciarcade`
+  cvar 0 (without the board the game says OUT OF ORDER). `-basedir .`: the map path
+  (`<basedir>/id1/maps/<map>.bsp`) is written into a 64-byte buffer of `map` (0x421ea0): the
+  run directory's path overflowed it and the first map crashed (its return address
+  overwritten). `-nojoy -noipx` as the cabinet's `glquake.bat`.
+- **Controls.** The GCI's buttons and joystick were Quake's keys `AUX1`..`AUX32`, bound in
+  `ID1/config.cfg` (`AUX1` attack, `AUX2` next weapon, `AUX3` jump, `AUX4`..`AUX7` strafe right,
+  back, forward, strafe left, `AUX25` a coin, `AUX30` the operator menu) and the menus' keys
+  (`menukey`, arcade keys only: `AUX1` Enter, `AUX2` Escape, the joystick the arrows). The
+  keyboard's keys are scan codes through `scantokey` (0x46ec60, 128 bytes, codes 0x59..0x7f
+  unused): the payload maps codes 0x60..0x7f to `AUX1`..`AUX32` and posts them from the
+  virtual sticks, the cabinet's binds unchanged. The trackball (the look) is the mouse:
+  `+mlook` on the command line, the right stick moves the cursor the game polls
+  (`GetCursorPos` / `SetCursorPos`; the cabinet's negative `m_pitch` kept, the stick's down
+  looks down). The real keyboard and mouse are filtered. In the menus the trackball (right
+  stick) moves the cursor, attack plays, jump chooses.
+- **Movies.** The attract's movies (`avis\*.avi`, Microsoft Video 1, MCI `avivideo`) play in a
+  second full-screen window ("Quake AVI") created visible over the game's: on the cabinet the
+  3dfx card drew the game on its own output. The payload creates it hidden, shows it on top
+  from `MCI_PLAY` to `MCI_STOP` / `MCI_CLOSE`, and fits each movie opened to it (`MCI_PUT` of
+  MCIAVI's window and destination: it drew 640x480 in the corner).
+- **Picture.** The 640x480 full-screen mode is not set (`WAL_NO_MODE_CHANGE`): a borderless
+  window of the screen's centered 4:3 rectangle, the lower left 640x480 corner scaled to it
+  (`WAL_GL_CORNER`, as SiN). A larger mode (`-width 1440 -height 1080`) stops at a
+  1080-texel texture ("GL_LoadTexture: too big"); `-window` mode errors at start.
+- **Free play** (the common `WAL_FREEPLAY`, on by default): the operator's free time
+  (`a_freetime`, a toggle, 0x47e718: "Free Play" in place of the credits), added to the
+  command line; the attract then skips its movies. `a_freeplay` (the other operator key) only
+  adds a credit. Off: the operator's pricing (one coin a credit, three lives).
+- Verified headless (2026-11-15): boot, attract (LBE movie fitted, demos), coin ("1 Credit"),
+  free play, the menu, a single player game (moving, looking both axes, shooting, next weapon,
+  checkpoints), the operator menu (accounting data).
+- **Mouse look** (the user, 2026-11-15: the desktop's mouse did not look): the mouse is the
+  trackball. The launcher's virtual sticks keep each axis's largest deflection of every device:
+  a mouse position on the right stick would fight the pads'. So the profile's gun (the mouse,
+  `mouse_wrap`, a counter 1 count a unit) is on the pedal axes (`accel` / `brake`, unused here),
+  the payload adds their motion (modulo 32768) to the cursor's, vertically inverted (the mouse
+  pushed away looks up); its left / right / middle buttons attack, jump, change weapon.
+- The user: 100% (2026-11-15, desktop).
 
 ### 6.3j UNIS (`crates/payload-unis`)
 
@@ -6483,7 +6849,10 @@ root).
 
 - **Touch frame.** `PQMTClient.dll` imported, as Infinity Blade FX: `pqmt.rs` through IAT
   hooks. The game asks the resolution but takes the points in client pixels (native mode).
-  Several players' fingers at once (one per gun).
+  Several players' fingers at once (one per gun), and the touch surface's (`input.touch`, up
+  to 10, ids after the guns' and fixed fingers, each kept by the nearest finger of the last
+  frame): real multi-touch slices beside the guns' simulated ones; `WAL_PQMT_TOUCH=pad` (the
+  whole touchpad is the picture, default) or `screen` (a touchscreen). Fruit Ninja FX as FX 2.
 - **Gun slice.** A gun's shot is a point, the fruit is cut by swipes: `WAL_GUN_SLICE=<length>`
   (profile option, default 0.25 of the picture's height) makes each trigger pull a slice
   (`pqmt.rs` `Slicer`): down at the aim, out half the length, back through the aim to the
@@ -7695,11 +8064,210 @@ Mario & Sonic at the Tokyo 2020 Olympic Games Arcade (SDFV, 64-bit, portrait). s
     syscalls (syscall user dispatch, Windows call numbers) or patching every stub; segatools users
     run unpacked executables (none in SEGAguide's packages for SDGS).
   - Tools made for it: payload-common's `packed.rs` (`WAL_PACKED_JUMP=0x100d`: the stub's last
-    jump caught, the payload started after it; `WAL_PACKED_DUMP`: the image written then),
+    jump caught, the payload started after it; `WAL_PACKED_DUMP`: the image written then, `{exe}`
+    in its path the program's name; 64-bit stubs too since O.N.G.E.K.I. bright MEMORY: their last
+    14 bytes at +0x1037, `pop rdi ... pop rcx; test rax,rax; je; push rax; ret; ret`, replaced by
+    an absolute `jmp [rip]`),
     `crash.rs` (`WAL_CRASH_DUMP`: the image at the first illegal instruction or access violation,
     the faulting code bytes logged), `WAL_PACKED_IMPORTS` (existing: hooks as hot patches).
   - CHUNITHM SUPERSTAR PLUS (SDGS 1.05.00): the same protected `chuniApp.exe`; its dump has no
     `App\amdaemon` folder.
+- CHUNITHM NEW!! (SDHD 2.00.01 dump, ALLS `ACA1`; `chunithm-new`, `WAL_ALLS_BOARD=chusan`,
+  `systemprofiles/alls/chunithm-new.yaml`): SUPERSTAR's board with amdaemon beside the game in
+  `App\bin` (game.bat's store server CVT command line: `config_common.json config_server.json
+  config_cvt.json`, the profile's `config_wal.json` last). The dump's `chusanApp.exe` and
+  `amdaemon.exe` are packed with SUPERSTAR's protector: SEGAguide's unpacked 2.02.00 set
+  (`SDHD/202.zip`: both programs, its ICF1 / ICF2 in `amfs`) is laid over them, the packed files
+  kept as `.orig`; the 2.02 programs run the dump's 2.00 data and its options A111-A151 (data
+  2.00.01-2.00.08). The AMFS folder is `amfs` (lower case: drive `e: amfs`).
+  - DIP switches 07 (store server, 120 Hz port settings, CVT): their first amdaemon start writes
+    `E:\sysfile.dat` without them (no Aime unit: the game's assert `Aime::getUnit` `unitIndex` out
+    of range); from the second start on, `config_cvt.json`'s 837-15286 reader on COM4.
+  - ALL.Net: this amdaemon authenticates with Auth V2 (`allnet_auth` type `2.0`: HTTPS to
+    `at.auth.sys-all.net` / `op.auth.sys-all.net` on the router's 443, a challenge with the A7
+    keychip's own AES keys: not emulable), the game then error 8114 (ALL.Net, RTC):
+    `config_wal.json` sets type `1.0` (the PowerOn to `naominet.jp`, as O.N.G.E.K.I.). Its LAN
+    install left on (a store server cabinet is the delivery server: with it off, the power-on
+    stays on 配信サーバーを探しています). `clock.rs` also grants the time zone privilege through
+    `LookupPrivilegeValueW` (this amdaemon's import).
+  - Title server (`chuni/server.rs`): SEGAguide's 2.02 program has its encryption off already
+    (its "No encryption" bytes at file +0x1CD1060 / +0x1CD1064 are 0), so plain zlib JSON to
+    `/SDHD/200/ChuniServlet/`. ARTEMiS's `new.py` ported: the game setting's matching fields
+    (`romVersion`, match times and limits, `matchingUri` / `matchingUriX` / `udpHolePunchUri` /
+    `reflectorUri`: the power-on's cabinet information upload crashed without them), the user
+    preview's NEW fields, map areas, symbol chat, net battle data, favorites, rivals (other saved
+    players), team courses, tokens, matching rooms (in memory, one cabinet), Card Maker (no
+    gachas: their data is Card Maker's; cards, prints); UpsertUserAll keeps the new lists (map
+    areas, login bonuses, missions, unlock challenges, linked verses, over power, e-money,
+    gachas, the net battle data, the favorite songs, the last 50 plays).
+  - The cabinet group: a fresh backup's settings default to group A (its role a member), whose
+    power-on waits forever on 設定同期中 Aグループ基準機から設定を取得します. The settings record
+    (amdaemon's `Y:\SDHD\appfile.dat`: its CRC-32 over the 0x5FC bytes after it, `DHDS`, the
+    settings, the group at +0x80, then role, continue, music select time, advertise volume; the
+    same record again 0x3FE000 later) is made group-less where amdaemon reads or writes it
+    (`daemon::set_backup_filter`, `chuni::lone_cabinet`), and in the game until it saves them:
+    its defaults are globals of the program (`.data`, the body starting with 32 volumes at 20
+    and 7), searched every 20 ms for the boot's first 15 minutes (`lone_cabinet_in_game`). The
+    backup's shared memory view (amdaemon's 4 MB `MapViewOfFile`: the record as CRC-32 over 0x460
+    bytes) is not what the game reads the group from.
+  - Controls: the touch surface and the mouse beside it (`input.gun` on the pedals, `x: accel`,
+    `y: brake`, the left button `kp0`: the sticks touch the slider halves): while it is held,
+    the key under the mouse, the picture's top third the air (`gun::pedals_in_picture`), a red
+    dot always shown (`WAL_CROSSHAIR_AXES=pedals`). The keyboard's arrows for the menus: left
+    slider keys 1-2 (the menus' left), right keys 5-6 (the menus' right), up nothing.
+  - The automatic Aime card: no start button, the slider's touch (keys, air, sticks, touch
+    surface, the mouse's `kp0`: `io4::slider_touched`) arms it, 4 s later
+    (`WAL_ALLS_AUTO_CARD_DELAY_MS`: the attract reads and drops a card touched at once, the
+    login prompt then never gets it).
+- O.N.G.E.K.I. (SDDT 1.00, ALLS `ACA1`; `ongeki`, `WAL_ALLS_BOARD=ongeki`): Unity 5.6 (Mono,
+  64-bit `mu3.exe`, portrait 1080x1920) beside amdaemon (both in `package\`, game.bat's
+  `amdaemon.exe -f -c config_common.json config_server.json config_client.json`, the profile's
+  `config_wal.json` last: video and e-money off). segatools' mu3hook (public domain) was the
+  reference for the devices, ARTEMiS (WTFPL) for the title server.
+  - IO4 (`ongeki.rs`, the game's `JvsButtonIDEnum` table): left red / green / blue player 1 bits
+    0 / 5 / 4, right red / blue player 1 bits 1 / 15, right green player 2 bit 0, the menus
+    player 2 bit 14 (left) / player 1 bit 13 (right), the walls player 2 bit 15 / player 1 bit 14
+    (active low); the lever on adc 0 (`0x7FFF - position`, increasing to the left). The right
+    red button decides in the menus (`UIInput.Key.Decision`), the left red goes back: start is
+    the right red button (and touches the automatic card).
+  - The game's boards: COM3 the 837-15093-06 LED board (the dump's firmware file
+    `update_15093-06_6710A_A0_AA53.hex`: `WAL_ALLS_LED_BOARD=15093-06,6710A,aa53,a0`, led.rs's
+    identity got a firmware version field; with the 15093-04 default the game reports LED NG),
+    COM2 the VFD (segatools' `board/vfd.c`: only its version request `1B 5B` is answered,
+    `02 "01.20" 01`). The game opens them from C# (`DllImport("kernel32")`, Mono's
+    `GetProcAddress`): `mono_imports::hook` points the serial functions at the payload's. The
+    three QR code cameras (card scanning, `WebCamTexture`) are absent: error 3100 at boot,
+    skipped by the game's own `mu3.ini` `[AM] IgnoreError=1` (the profile's file; also
+    `[Sound] WasapiExclusive=0`).
+  - The settings backup (`BackupSettingRecord`, amdaemon's `Y:\SDDT\appfile.dat`): its factory
+    values are a linked cabinet's (group A, not the group's reference cabinet: the boot's
+    "Aグループの基準機から設定を取得" waits forever for the reference cabinet) and an uncalibrated
+    lever (min = max = 32768: "レバー可動範囲 NG", the lever dead). The payload, from a thread
+    started at the first `mono_add_internal_call` (the player resolves Mono's exports with
+    `GetProcAddress`; Mono touched earlier froze the game), patches `clear()`'s IL (group OFF)
+    and `leverClear()`'s (0x1000-0xEFFF), and replaces `BackupSetting.verify()` (a valid record
+    read at boot) with a native function fixing those factory values in an existing backup (the
+    record saved then); values set in the test menu are kept.
+  - Network: ALL.Net accepted; the title server (`ongeki/server.rs`, ARTEMiS's `base.py`,
+    `bright.py`, `brightmemory.py` and the versions' game settings: every handler, Card Maker's
+    and gacha's included; players in `Y:\ongeki\<aime id>.json`, the song rankings from
+    `Y:\ongeki\playlog.json`; events, rewards and cards read from the game's data) runs in
+    amdaemon's ALL.Net server. The game's Mono sockets are not redirected (Chrono Regalia's
+    case): the title URI is that server itself (`WAL_ALLS_TITLE_URI` `http://{allnet}/SDDT/100/`,
+    the new `{allnet}` token). Version 1.00 posts plain JSON (later versions zlib; encrypted
+    requests, R.E.D. and later, are not answered). The server's maintenance hours answered are
+    the game's default, Japan's 04:00-07:00 (ARTEMiS's "6 hours from now" in UTC falls in the
+    play hours: guest play only for an hour, then a reboot). The billing server is needed
+    (`WAL_ALLS_BILLING=1`, amdaemon's accounting mode A).
+  - Clock: Mono's imports get the payload's clock (Japan, the time warp), as amdaemon's
+    (`hkb::mono_clock`): else the game's "today's play is over" banner.
+  - Speed: amdaemon's main loop (0x140002586) calls `Sleep(0)` while busy, `Sleep(1)` when
+    idle; under Wine it always spins (a core at 100%) and the game's songs ran at 16-19 FPS
+    (story scenes 60; the GPU at 30%). The profile makes it always sleep 1 ms
+    (`WAL_ALLS_DAEMON_PATCHES` `0x2589:9090,0x258e:9090`): songs at about 50 FPS, amdaemon at
+    12%. `mu3.ini` `[Network] UseLocalCollab=0` (the cabinets' local link, its sockets
+    polled each frame) added a few FPS. Drawn at 720x1280 (`-screen-width/-height`,
+    `WAL_DESKTOP_SIZE`), a black bezel; the player's webcams hidden (`webcam::hide_all`: the
+    game opened them all as its QR card readers and decoded their frames).
+  - Free play: amdaemon's (the system backup's, and `config_wal.json`'s `credit.config.freeplay`
+    written by the payload from the option: amdaemon writes its configuration's credit settings,
+    `config_common.json`'s `freeplay: false`, over the backup at start; `sysfile.rs`, every ALLS
+    game); the game's own "event mode" (shown as FREE PLAY) is the store's tournament mode (no
+    story, 1-3 songs a play): not used.
+  - Verified headless (2026-11-15): power-on test all GOOD (ALL.Net, Aime, title server), attract,
+    a new Aime card: registration, name entry, profile, news, the story's chapter 0.
+  - O.N.G.E.K.I. PLUS (1.05, `ongeki-plus`) and SUMMER (1.10, `ongeki-summer`): the same
+    `mu3.exe` and the same backup IL, a newer amdaemon (shared by both): its main loop sleeps
+    `bpl ? max(1, ms) : 0` (`xor ecx,ecx; test bpl,bpl; cmovne ecx,r15d` before the call at
+    0x140002686), made `mov ecx,1` (`WAL_ALLS_DAEMON_PATCHES` `0x267d:B90100000090909090`);
+    title URIs `/SDDT/105/`, `/SDDT/110/` (zlib-packed requests, data versions 1.05.00 /
+    1.10.00). Verified headless (2026-11-15): power-on, a new Aime player, registration, story,
+    the tutorial song at 55-60 FPS. Option data (each pack's `DataConfig.xml` names its data
+    version): PLUS 1.05.01 (`package\option\A001`), SUMMER 1.10.01-1.10.04 (A001, A004, A005,
+    A008, A012); the game reads them from `mu3_Data\..\option`, the title server's events and
+    rewards from them too (SUMMER: 138 events, 619 rewards).
+  - Later versions (bright MEMORY 1.45, Re:Fresh 1.50, 1.52): every program and library of the
+    images is packed with CHUNITHM SUPERSTAR's protector (64-bit stub, entry +0x1b5c, its tail at
+    +0x1037; the managed assemblies too, with a native stub and the IL-only flag cleared): stage 1
+    decrypts (`packed.rs` catches it) only the protector, whose direct system calls die under Wine
+    (the same `ntdll+0x10efb` crash). The same builds unpacked (memory images: the PE timestamps
+    match) are laid over them, the packed files kept beside (`packed-<version>`):
+    - bright MEMORY (`ongeki-bright-memory`, dump 1.45 in `App\package`, options A001-A028 =
+      data 1.45.00-1.45.07 moved to `App\package\option`): SEGAguide's SDDT 1.45 set (mu3.exe,
+      amdaemon.exe and the assemblies the dump's builds, PE timestamps matching); title URI
+      `/SDDT/145/` (data 1.45.00, 934 events); amdaemon's Sleep loop at +0x26fd
+      (`B90100000090909090`); requests plain JSON with a `nonce_` (not encrypted). The dump's
+      amfs has no ICFs: SEGAguide's (else the payload's 1.00.00 ICF, the players'
+      `lastRomVersion` 1.00.00). A new player: the "create user data?" question starts on No (the
+      left green button moves to Yes, else a guest play). 912 songs (the 1.37 dump, first used
+      with SEGAguide's 1.39 set: 844). Verified headless: a new player saved at the end of the
+      credit (`UpsertUserAll`; 1.37: loaded on the next card touch).
+    - Re:Fresh 1.50 (1.52's base, no profile): the image's `SDDT 1.50 unpacked` set (amdaemon the
+      same build, Sleep loop at +0x26fd), options A001-A016 (1.50.00-01); title URI `/SDDT/150/`
+      (data 1.50.00); plain requests (the community's unpacked assembly is MonoMod-patched:
+      `NetConfig.EncryptVersion` 0, `UseTLS` false); the community option AOMN (194 songs of other
+      versions, data 1.50.01) beside them. Verified headless: a new player through the tutorial to
+      the save.
+    - Re:Fresh 1.52 (`ongeki-re-fresh-152`): 1.50's folder hard-linked, the 1.52 update's files
+      over it (its assemblies already unpacked memory images, IL-only), its ICFs (game 1.50.00,
+      patch 1.52.00), options A001-A016 and A033-A052 (1.50.12-16; A033/A034 only their fix
+      files) and 1.50's AOMN (1.50.01, loaded after A052: its 7 songs that 1.52 has removed, 187
+      left, 1,013 + 187 songs; events 675 to 1,244); title URI `/SDDT/152/`. Its assembly is not
+      patched: `Config.initializeAfterAMDaemonReady` sets `NetConfig.EncryptVersion` from the ROM version (1052:
+      AES requests to PBKDF2-hashed endpoint names, keys only in the game) and `UseTLS`; the
+      title server never reached, the game offline ("guest play only"). `ongeki.rs`
+      `plain_requests`: both setters' IL (`ldarg.0; stsfld; ret`) made `nop`s before the game
+      runs them (every version; a missing or different setter left as it is). Verified
+      headless: the title server reached, a new player through the tutorial to the save.
+  - Open: coins. The payload's IO4 counts them (chute 1, `count << 8` as segatools', logged
+    `io4: coin N`), the game opens its coin blocker (output 21), but amdaemon never credits
+    them (CREDIT(S) stays 0, free play off too; the count in both bytes changes nothing). The
+    IO4 coin path was never verified before (Rio's and crossbeats' coins are JVS).
+- Kemono Friends 3 Planet Tours (SDFL, Nu SX `AAW0`, Sega 2019; `kemono-friends-3-planet-tours`,
+  `WAL_ALLS_BOARD=kemono`, `systemprofiles/seganu/kemono-friends-3-planet-tours.yaml`): a 32-bit
+  Mono Unity 2018.3 card game (`App\UnityApp\Parade.exe`, portrait 720x1280) with the 64-bit
+  `App\amdaemon.exe` (JVS on the AMEX board, `WAL_ALLS_JVS=1`; the Aime unit on COM1), the
+  CHC-C300 card printer, an LED board and two cameras (`kemono.rs`, `kemono/`).
+  - Background programs run in the game's folder (`App\UnityApp`), and this amdaemon also reads
+    a bare `config.json` from its working directory (else "Invalid app config", the dongle never
+    set up): the profile's `files` put the dump's `config.json` and `config_wal.json` there.
+  - The keychip: this 2019 amdaemon's amDongle reads its ids from the registry
+    (`amsSystemProperty*`, `SystemProperty\keychip`) and takes the model type 1-98 only; the
+    registry's `modelType` was the platform id's digit (`AAW0`: 0, "Disconnect dongle" to every
+    game request): `registry.rs` writes 1 at least. Each keychip ioctl code is logged once.
+  - The cabinet: `AmManager.checkTarget` trusts the running amdaemon only with `USERNAME`
+    `AppUser` on Windows 8 / 8.1; elsewhere it kills it (`Core.Kill`) and looks for a
+    developer's `amdaemon_emu.exe` (the boot stays on BACKUP): `USERNAME` set in the game's
+    process, Mono's `GetVersionExW` 6.3. As a cabinet it keeps its work data in `Y:\SDFL`.
+  - The LED board (837-15093-04 on COM10) through the game's `SerialPortAPI.dll`: its
+    `serport_*` imports are the payload's (`mono_imports`), `led.rs` behind them; the game checks
+    the board info's 16-bit receive buffer size big-endian (`WAL_LED_RXBUF_BE=1`: `00 CC`, else
+    LED CONTROL BOARD BAD).
+  - The printer: `chcusb.rs` `resolve_c300` (`C300usb.dll`, `C300FWDLusb.dll` through Mono): the
+    C310 functions, `startpage` / `setPrintStandby` / `testCardFeed` with the C300's parameters
+    (stdcall: their count matters), firmware versions from `StreamingAssets\Printer`.
+  - The cameras (`kemono/camera.rs`): Unity's `WebCamTexture::get_devices` internal call
+    (replaced at its `mono_add_internal_call`) lists two webcams; `QrCodeDecoder.IsCameraPlaying`
+    is true; `QrCodeDecoder.SetDeviceNameFromPos` gives the card camera's decoder, as a code its
+    thread decoded, the empty slot's `SDFL_POS_CARD` (the boot's camera check takes that webcam
+    for the card camera, the other for the player's) or the next card printed this session.
+    The printed cards' QR content is caught at `QrCodeUtil.CalcCRC7` (the encoder checksums the
+    whole content before drawing it; the payload's CRC-7 is the game's) and kept in
+    `Y:\kemono\cards`. A CameraCheck IL patch was refused by Mono (exception clauses).
+  - The title server (`kemono/server.rs`, in amdaemon's ALL.Net server; `WAL_ALLS_TITLE_URI`
+    `http://{allnet}/SDFL/`, the game appends `paradesv_arcade/<Command>.do`): no public server
+    (ARTEMiS has none). Requests are `param=` the JSON obfuscated by `SGNFW.Http.Connection`
+    (the JSON's MD5's first 4 bytes, the JSON XORed with their MD5, an MD5 trailer); answers plain
+    JSON. ServerSetting (the game's default settings, the ranking from the players' best
+    scores), CheckAlive, GetUserInfo (1: no player), LoginUser (126, logged in, for a new
+    player: `UserNotExist` there returns to the attract), UpdateOrLogoutUser (the `UserInfo`
+    document kept in `Y:\kemono\<Aime id>.json`), SendLog / SendPrintLog / GetPrintLog.
+  - Entry: the agreement and player screens' yes is the green button (b3); the automatic Aime
+    card waits 3 s (`WAL_ALLS_AUTO_CARD_DELAY_MS`).
+  - Verified headless: power-on self test all GOOD but DB SERVER (no request reaches the title
+    server during it; the game uses it fine afterwards), camera check, attract (free play), new Aime player (name entry, tutorial, card
+    printed, saved), returning player, card scene, a battle. User (2026-11-16, desktop): "game
+    100% working".
 
 ### 6.3m Sega Nu (`crates/payload-seganu`)
 
@@ -7790,6 +8358,28 @@ payload is loaded by `wal-loader` (no driver DLL imported).
   `WAL_SEGANU_FREEPLAY_BYTE=0x1218`, and in a blank backup the records of a set up one first
   (`WAL_SEGANU_FREEPLAY_RECORD`: its id record at 0x1f0 / 0x9f0, its default coin settings; else
   its first boot sets the backup up, free play off).
+- Hatsune Miku Project DIVA Arcade Future Tone (SBZV 7.01.00, AAV0, `diva.exe` 64-bit OpenGL,
+  the RingEdge Project DIVA Arcade's engine; `WAL_SEGANU_DIVA=1`, `diva.rs`, per segatools'
+  `divahook`): its own ALL.Net client, AimeDB, billing and the local file server's broadcasts as
+  KanColle Arcade's (`kancolle.rs`); the title server payload-common `divaserver.rs`, its players
+  ARTEMiS' Future Tone handlers ported whole (`divaserver/future_tone.rs`, `sv\diva_ft.txt`);
+  COM1 the Elo 2701 touch controller (payload-common `elo.rs`), COM10 the TN32 Aime reader
+  (generation 1), COM11 the 837-15275 touch slider (32 cells streamed while scanning; the hands
+  slide by themselves from the middle outwards while b5 / b6 are held, as segatools' divaio's
+  automatic slides). Its NVIDIA assembly programs through payload-common `cg.rs` / `nvasm.rs`
+  (moved from the RingEdge payload with `glscale.rs`, `elo.rs`, `divaserver`): its skinning's
+  `!!NVvp5.0` programs read the bone matrices from an NV_parameter_buffer_object buffer
+  (`BUFFER4 _mtxpal[] = { program.buffer[0] }`, absent in Mesa: the game's next `glGetError` took
+  the error for its first render target's and crashed): rewritten as local parameters
+  256..1023 (`nvasm::PALETTE_LOCAL`), the integer index converted from a float read as that float;
+  the buffers bound to `GL_VERTEX_PROGRAM_PARAMETER_BUFFER_NV` kept by the payload (`glBindBuffer`,
+  `glBufferData`, `glBufferSubData`, `glMapBuffer*`, `glBindBuffer{Base,Range,Offset}NV`,
+  `glProgramBufferParameters*NV`; Wine's `wglGetProcAddress` gives the NV ones as NULL) and
+  copied into the bound program's local parameters before a draw when changed. All 8140 programs
+  of `rom/shader.farc` load in Mesa. Startup: the option data at `C:\Mount\Option` (`c_folders`,
+  else EXTENDED DATA waits), the festival info's received flag (`0x140012fd0`, NET PARAM 5/6)
+  and the closing time (`0x14020c990`) patched (profile `WAL_PATCHES`). Its sound: one WASAPI
+  exclusive stream (44.1 kHz, 4 channels), played in shared mode (`WAL_WASAPI_SHARED`).
 
 ### 6.4 Batocera integration
 
@@ -8073,6 +8663,8 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `ultra-street-fighter-4` | Ultra Street Fighter 4 | nesica | works (user: 100%), opening video | key usf4, hide Microsoft dinput8 (blocks on raw HID devices), 6-button map |
 | `vampire-savior` | Vampire Savior: The Lord of Vampire | nesica | works (user) | NESYS on ("server not connected" when disabled) |
 | `yatagarasu` | Yatagarasu: Attack on Cataclysm | nesica | works (user: 100%), fullscreen with its side portraits, Japanese text | hide ReShade, `WAL_ANSI_CODEPAGE: 932`, language files with "MS Gothic" instead of "ＭＳ ゴシック" (`files`, fakejapanese: squares otherwise), picture drawn 854x480 in a 1280x720 back buffer and presented to 0,0 1280x720: `WAL_D3D9_WINDOWED_SIZE: 854x480` (also turns its fullscreen Reset windowed, drops the Present rectangles) in a screen-sized popup (`WAL_WINDOW_POPUP`, `WAL_WINDOW_SIZE: screen`) |
+| `magicians-dead` | Magician's Dead | nesica2 | works (user: 100%), NESiCA cards (new card registration, the loader's game server: profile and plays saved), tutorial and missions with computer players; Leap Motion hand from the right stick, the mouse or the touchpad | `BppGame-Win64-Shipping.exe` (Unreal 4.12, 64-bit) started by wal-loader; payload as `MAGIDEIO.dll` (I/O board, NESiCA reader) and `Leap.dll` (the Leap SDK 3.2 C++ API, a synthetic hand: shapes for the thumb flick, fist, L); grip controller = XInput pad; free play and NESiCA hours patched back (the dump's executable is another loader's build); game server `message.proto` (protobuf over TCP); no national matches |
+| `street-fighter-v` | Street Fighter V Type Arcade | nesica2 | works (user: 100%), NESiCA card (registration, play records saved), free play, arcade against the computer (one player per cabinet) | `StreetFighterV.exe` (Unreal 4, 64-bit) started by wal-loader; payload as `UIO_AMIC.dll` (Taito USB I/O: switches, EX buttons, coins, NESiCA reader); NESiCAxLive delivery paks from the dump's `Patch` folder at `C:\Patch`; `Culture=ja` written (Scaleform fonts); free play by the settings loader; card server XML (card, card_detail records, card_bdata) |
 | `million-arthur-arcana-blood` | Million Arthur Arcana Blood | nesica2 | works (user: 100%: training and story modes), NESiCA network connected | NxL2Core.dll replaced by the NESiCA payload (`nxl2.rs`: inputs, coins, settings, card), NESYS on with `ms`/`ss` in the certificate's server list (`WAL_NESICA_NESYS_HOST`), its HTTP card-service reads answered (`/root/match_conf`), native d3dx9_42 |
 | `kof-xiv` | The King of Fighters XIV | nesica2 | works (user: 100%), NESiCA network connected | 64-bit NxL2Core.dll replacement (`wal_nesica64.dll`), NESYS on with `ms`/`ss` in the certificate's server list (`WAL_NESICA_NESYS_HOST`), `Resolution=1` (1080p: 1920x1080 window; 0 = 1280x720) |
 | `snk-heroines` | SNK Heroines Tag Team Frenzy | nesica2 | works (user: 100%), NESiCA network connected | as KOF XIV (64-bit NxL2Core.dll replacement, NESYS `ms`/`ss`, `Resolution=1`), dump's 32-bit dinput8 hidden; runner fix `winedmo-seek-flush` (hung after START: movie seek deadlock) |
@@ -8080,6 +8672,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `samurai-shodown-180` | Samurai Shodown (1.80.00) | nesica2 | works (user: 100%), NESYS offline; a red banner ただいまネットワークを使ったプレイができません。 (network play unavailable) stays on screen: the game's own offline notice | as 1.30.00 |
 | `fighting-ex-layer` | Fighting EX Layer | nesica2 | in game (user: card accepted, game starts), NESiCA network connected; card saved (user: name shown, no freeze after a match) | Unreal Engine 4: `EXF-Win64-Shipping.exe` started directly, its `NxL2Core.dll` replaced by the 64-bit payload; NESYS `ms`/`ss`, card reissue replies and session (§6.2b), card inserted automatically (`WAL_NESICA_CARD_AUTO`), card writes saved as their reads, ASCII case folding (`WAL_FAST_WCASE`: Wine's towlower stalled the game ~5 s twice after a match) |
 | `theatrhythm-final-fantasy-all-star-carnival` | Theatrhythm Final Fantasy All-Star Carnival | nesica2 | works (user: 100%), NESiCA cards (loader's card server, progress saved), touch screen (mouse, red pointer); right lever on I/J/K/L; no matching with other cabinets | `game.exe` (Unity 5.3, 64-bit); payload as `game_Data/Plugins` ismACIO / NESiCAReader / SimpleNesys (one module); NESYS online with the payload's card server (HTTP, managed `SetProtcol` / Photon `Connect` replaced); touch = Unity's mouse, red dot (Direct3D 11 Present); original `Assembly-CSharp_org.dll` installed |
+| `tetote-x-connect` | Tetote X Connect | nesica2 | works (user: 100%), NESiCA cards (loader's title server, progress saved), touch screen (mouse, touchpad multi-touch); no camera (pose phases play without it) | `Vision.exe` (Unity 2018.4, 64-bit), payload at the entry point, portrait 1080x1920 desktop; plugins via `mono_imports`; camera and display rotation code replaced; touches as `WM_TOUCH` |
 | `3d-cosplay-mahjong` | 3D Cosplay Mahjong | typex | in game (mahjong hand) | wal-loader, JVS, 1280x800, `tricks: [d3dx9_33]` |
 | `battle-fantasia` | Battle Fantasia | typex | works (user: 100%) | wal-loader, JVS, 1280x800, game patches, runner hotfix (winedmo) |
 | `cyber-diver` | Cyber Diver | typex | works (user: 100%) | Source client hl2.exe, -io 1, serial hooks in bin/xioman.dll, complete JVS 0x25 reply, cabinet start and active-low switches, fallback axis calibration; offline; some Japanese labels garbled; testmode.exe absent |
@@ -8198,6 +8791,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `lady-luck` | Lady Luck | ringedge | works (user: 100%) | RingWide (platform AAM) medal slot machine satellite (game id SBXF), `App_Release.exe` alone (game.bat's `mbcom.exe`, the network medal bank, and `AimeReader.exe` not needed); 1280x1024 (DIP DF), region 01, credit record, challenge file `Data/amFile/SBXF_Table.dat`; its boards from `Data/script/game_conf.lua` (`IOBoardComPort` 3, `TouchPanelComPort` 1, `CPBoardComPort` 5; 0 = unused, debug): the I/O board on COM3 is Medal no Gunman's protocol with its own switches (`WAL_RINGEDGE_MEDAL_IO`, `satellite.rs`: selector panel / main door closed, reset key = service, transfer; medals counted by `66 0C`, coin = 10 medals), the control panel board on COM5 (`WAL_RINGEDGE_CP_BOARD`: buttons select 1-5, start, payout through command `81`), a 3M MicroTouch EX II on COM1 (`WAL_RINGEDGE_MICROTOUCH`, `microtouch.rs`: the mouse, its left button = b8; format tablet reports streamed through the serial layer's idle callback, Y up; the game's default calibration fits). A fresh backup shows error 3001 until the reset key (service) is turned. The game saves the I/O board's last command list in backup RAM and restores it at boot, then reads the `74` handshake reply against it (its checksum as a report: error 3105 at every boot once a payout saved the list): patched to restore it empty (`WAL_PATCHES` 0x2deac). Payout (b6) pays the medals out |
 | `sonic-dash-extreme` | Sonic Dash Extreme | seganu | headless tests (2026-11-08): attract, coins, start, character select, play, tickets dispensed during play and at the end, back to attract, test menu and back; not user-verified | Sega Nu SX (§6.3m): AMEX board devices, keychip driver, registry values, JVS with 24 outputs and the ticket dispenser (`WAL_TYPEX_JVS_TICKETS`), portrait window in the dump's bezel |
 | `luigis-mansion-arcade` | Luigi's Mansion Arcade | seganu | user (2026-11-08): "game is working perfect" (aim, start, play); headless tests: attract, coins, service, free play from a blank backup | Sega Nu (§6.3m), 64-bit: the Capcom protector's game started once unpacked (`WAL_SEGANU_UNPACK`), the I/O board on COM1 (guns, coins, switches; `WAL_SEGANU_LMAIO`), free play in the game's coin settings |
+| `project-diva-arcade-future-tone` | Hatsune Miku Project DIVA Arcade Future Tone | seganu | user (2026-11-16): "game working 100%" (picture, sound, play); headless tests: startup checks, attract (3D PVs), touch, new Aime card registration, a song played to its result (level up saved), next stage | Sega Nu (§6.3m), 64-bit OpenGL: NVIDIA assembly translated (NV_gpu_program5 parameter buffer emulated), Elo touch, TN32 Aime, touch slider, ARTEMiS' title server |
 | `mario-and-sonic-at-rio-2016-olympic-games` | Mario & Sonic at the Rio 2016 Olympic Games | alls | headless tests (2026-11-08): power-on test, attract, coins, mode / character / event select, 100m race to the result, test menu input test; user (2026-11-08): Aime name registration, two card sessions, the save kept | Nu 1.1 with amdaemon (§6.3l): AMEX board JVS in amdaemon (`WAL_ALLS_JVS`), LED board on COM12, levers layout, amRtc sync patch, Aime (837-15286) and the CTS game server (player names and saves kept) |
 | `initial-d-arcade-stage-zero` | Initial D ARCADE STAGE Zero | alls | user 100% (2026-11-10), English option user OK; headless tests: attract, guest story race, new Aime player (registration, team, car, race, saved), returning player loaded, test menu network test | Nu 1.1 with amdaemon (§6.3l), segatools idzhook reimplemented: AMEX JVS with the H shifter layout, FFB COM1, LED 15070 COM11, its store server (ServerBox) started with the payload, the IDZ game server (ARTEMiS + minime protocol), billing for Aime |
 | `initial-d-arcade-stage-zero-ver-2` | Initial D ARCADE STAGE Zero Ver.2 | alls | user 100% (2026-11-10), English; headless tests: guest race, new Aime player saved, returning player loaded | Version 2.30 (§6.3l): Ver.1's board and profile, the game server's 2.10 / 2.30 protocol (minime v016 + ARTEMiS + the game's own parser for the 2.30 profile) |
@@ -8215,6 +8809,13 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `crossbeats-rev-sunrise` | crossbeats REV. SUNRiSE | alls | user (2026-11-12): "the game seem to work perfectly" (mouse touch, red dot, Aime login with PIN, profile load); headless tests: boot, ALL.Net, game server tables, coins, touch, card sign-up | Nu 1.1 without amdaemon (§6.3l, `WAL_ALLS_BOARD=cxb`): CommIo / CommLamp exports, WM_TOUCH, TN32 Aime reader COM12, options after 0060, billing type 0, ARTEMiS game server (WinHTTP body order fix) |
 | `wonderland-wars` | Wonderland Wars | alls | user (2026-11-13, desktop): boots, touchpad pen OK, guest play; headless: power-on and network tests, shader cache | Nu 1.1 without amdaemon (§6.3l, `WAL_ALLS_BOARD=wlw`): 3M touch COM1, 837-15312 pen board COM12, amVideo ordinals, Cg shader cache, server checks shortened; offline (no game server): guest only |
 | `chunithm-superstar` | CHUNITHM SUPERSTAR | alls | not running (2026-11-09): protected executables, amdaemon dies under Wine (direct system calls) | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=chusan`): profile, IO4 air sensors, slider, LED boards, title server ready |
+| `chunithm-new` | CHUNITHM NEW!! | alls | user (2026-11-16, desktop): "game working 100%" (mouse with red dot, menus, Aime card); headless: power-on from a fresh backup, card login, new player, tutorial with the slider; with SEGAguide's unpacked 2.02 executables (the dump's are protected) | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=chusan`): ALL.Net auth 1.0 (Auth V2 not emulable), ARTEMiS NEW title server (matching, Card Maker), cabinet group off in the backup and the game's defaults |
+| `ongeki` | O.N.G.E.K.I. | alls | headless tests (2026-11-15): power-on test, attract, new Aime player (registration, name entry, news, story chapter 0) | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=ongeki`): IO4 buttons and lever, LED 15093-06 COM3 and VFD COM2 (Mono DllImports), backup factory settings fixed (group OFF, lever range), ARTEMiS title server in amdaemon (`{allnet}` URI), Mono clock, mu3.ini IgnoreError (no QR cameras) |
+| `ongeki-plus` | O.N.G.E.K.I. PLUS | alls | headless tests (2026-11-15): power-on, new Aime player, story, tutorial song (55-60 FPS) | `ongeki`'s (§6.3l), version 1.05: its newer amdaemon's Sleep(0) patch, title URI /SDDT/105/ |
+| `ongeki-summer` | O.N.G.E.K.I. SUMMER | alls | headless tests (2026-11-15): power-on, new Aime player, story, tutorial song (57-60 FPS) | `ongeki`'s (§6.3l), version 1.10: the same amdaemon patch as PLUS, title URI /SDDT/110/ |
+| `ongeki-bright-memory` | O.N.G.E.K.I. bright MEMORY | alls | headless tests (2026-11-16, dump 1.45): boot, title server (data 1.45.00, options A001-A028), new Aime player (name entry, login bonus, story, tutorial song) to the save | `ongeki`'s (§6.3l): packed images, SEGAguide's unpacked 1.45 set and ICFs, Sleep patch +0x26fd, title URI /SDDT/145/ |
+| `ongeki-re-fresh-152` | O.N.G.E.K.I. Re:Fresh 1.52 | alls | headless tests (2026-11-15): boot, title server (data 1.50.00, plain requests), new Aime player to the save | `ongeki`'s (§6.3l): Re:Fresh 1.50's unpacked set with the 1.52 update, options A001-A052 and AOMN, `plain_requests`, Sleep patch +0x26fd, title URI /SDDT/152/ |
+| `kemono-friends-3-planet-tours` | Kemono Friends 3 Planet Tours | alls | user (2026-11-16, desktop): "game 100% working"; headless: self test, attract, new Aime player (name, tutorial, card printed, saved), returning player, card scene, battle | Nu SX with amdaemon (§6.3l, `WAL_ALLS_BOARD=kemono`): keychip model type, cabinet user / Windows 8.1, LED board via SerialPortAPI, CHC-C300 printer, two virtual webcams with the printed cards in the card slot, its own title server (players, ranking) |
 | `teratoma` | Teratoma: The Last Rebellion | ringedge | works (user: 100%) | Skonec 2014 lightgun game on the Operation G.H.O.S.T. engine (amLib, gs2.ini, game id `SBWA`, RingWide platform AAM). `TT.exe` is packed: `wal-loader` (`WAL_LOADER_TERATOMA`, `crates/loader/src/teratoma.rs`, SHA-256 checked) runs the unpacker past its checks and loads the payload from the game's startup call. Its code calls the system through the packer's stubs: `WAL_PACKED_IMPORTS=kernel32.dll,setupapi.dll,d3d9.dll` hot patches kernelbase's functions (setupapi's and d3d9's: the unpacked import table's pointers). Its 1280x720 fullscreen device (no such mode on a 1600x1200 Xorg screen) made a 1280x720 back buffer in a borderless screen-sized window, stretched (`WAL_D3D9_WINDOWED_SIZE`, `WAL_WINDOW_POPUP`, `WAL_WINDOW_SIZE`). The dump's `root/lua/Sound/Sound.lua` wraps the game's (music and gun shot at 0.25, dialogue doubled): the game's own script, extracted from it, put back (`files`). The dump's gs2.ini (PC mouse mode) replaced by a profile file with `EnableAMLib`, `EnableJvs`, `GunController` on: amLib's JVS on `mxjvs`, the game's own JVS reader (guns, buttons, coins) on the first COM port Windows lists (`COM*`), an overlapped reader (`WaitCommEvent`, reads armed after each reply: `WAL_SERIAL_PENDING_READS`, replies 2 ms after the write's completion, else polled 5 times a second). Test menu: F2 sets `root/TestMode.sac` and asks amMaster for the next application, it stays: the payload ends it after 2 s, the launcher starts it again. The protector's watchdog threads end the game about a minute into a level (`TerminateProcess` from +0x28162a6, not every run): ignored (`WAL_IGNORE_TERMINATE_FROM`). `logo.avi` and the promo movie are WMV2 re-encodes in the dump; the in-game movies WMV3 |
 | `chaos-code-ringwide` | Chaos Code (RingWide) | ringedge | works (user: 100%) | RingWide boards in the RingEdge payload |
 | `ko-drive` | K.O. Drive | ringedge | works (user: 100%) | RingWide |
@@ -8237,6 +8838,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `daytona-championship-usa` | Daytona Championship USA | europar | works (user: 100%); the manual gearbox not engaged (the race in automatic) | `Daytona/Daytona.exe` (the dump's original `bkp.exe`), wal-loader: fake DirectInput "SEGA IO Controller" (wheel, gas, brake, start, shift up/down, H gears, views), the Sega Shell over TCP 18888 (credits, free play, security answers), InpWrapper force feedback, Wine's qcap disabled (heap corruption), a borderless window of the screen's size |
 | `daytona-championship-usa-new-season-edition` | Daytona Championship USA New Season Edition | europar | works (user: 100%); the manual gearbox not engaged (the race in automatic) | `Sega/Daytona/Daytona.exe`, as the first edition; the shell's cabinet SKU (else NETWORK DISCOVERY) |
 | `men-in-black` | Men In Black | europar | works (headless test: attract, coins and free play, both players, guns aimed and shooting; user played on the desktop) | `MIB.exe` (Unity 2020 Mono, 64-bit), wal-loader64: Unity's input functions answered with the guns, the shell over TCP 18888 (credits, free play, security answers), `ShellData` settings from the profile, no lamp board |
+| `mission-impossible-arcade` | Mission: Impossible Arcade | europar | works (headless test: attract, coins and free play, both players, guns aimed, both triggers shooting in a mission, mission 3 and a later stage chosen) | `Sega/MissionImpossible/MissionImpossible.exe` (Unity 2018.4 Mono, 64-bit), wal-loader64: Unity's joystick keys and axes answered with the guns (two triggers each), the shell over TCP 18888 ("MIG": credits, free play, security answers), `ShellData.ini` from the profile, every mission and stage selectable (option), Sinden cameras hidden from the lobby photo |
 | `nobiteke-byon-byon` | Nobiteke! Byon Byon Daisakusen | konami | works (user: 100%) | `bin/byy.exe ..\ ..\` (§6.3h), `libacio.dll` replaced: HBHI board (switches, coins, two positional guns scaled onto the default calibration, security plugs), ICCA card reader, cabinet IP setup answered, e-Amusement offline (local mode), picture at the screen resolution in a borderless window |
 | `gashaaaan` | Gashaaaan | konami | works (headless test) | `bin/ballshooting.exe` (§6.3h), `iob.dll` replaced: I/O board (buttons, coins, ball supply, plugs), ballio's camera board answered (ball hits from the guns), the two overlapping screens shown as one picture, E:/F: save drives, OpenGL crosshairs |
 | `gashaaaan-refill` | Gashaaaan Refill! | konami | works (user: 100%) | `IG2/exec_root/gasya.exe` (§6.3h), `libbms.dll` replaced: BM-System (credits, e-Amusement offline), ig2ACLib's boards without hardware and its inputs answered (buttons, coins, ball hits from the guns), two screens in one window, E:/F: save drives, crosshairs |
@@ -8349,9 +8951,29 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `monsterous` | Monsterous | arcadepc | user 100% (2026-11-12), 1 player | Game Concepts' coin pusher screen game (SDL 1.2, 32-bit, §6.3i, board `monsterous`): the game's own desktop mode (its board simulated), the payload aims at its ten targets with the stick (a ring drawn), fires them (its digit keys), the coins, free play, the operator menu's switches; its 1280x768 picture stretched to the window |
 | `rerave` | ReRave | arcadepc | user 100% (2026-11-12), 1 touch (players 1 and 2 on it) | Step Revolution's touch screen rhythm game (Unity 3.5, 32-bit, §6.3i): the payload is the cabinet's RaveSvc service (coins, settings), replaces the SenseLock dongle checks, plays the touch with a touch screen, the gun or the mouse, free play as the game's Event Mode, a 1920x1080 desktop stretched |
 | `deathsmiles-ii` | Deathsmiles II | arcadepc | user 100% (2026-11-12), 2 players | Cave's shooting game (Direct3D 9, 32-bit, 640x480, §6.3i, board `cave`): the payload emulates the COM3 I/O board (4-byte messages on change: sticks, 3 buttons, start, service, test, coins), clears the file loader's allocation (a boot divide by zero), free play as the SYSTEM menu's COIN MODE |
+| `omatsuri-yasan-kingyo-sukui` | Omatsuri Yasan Kingyo Sukui | arcadepc | user 100% (2026-11-15), 1 player | Cave's goldfish scooping touch game (Direct3D 9, 32-bit, 1024x768, §6.3i, board `omatsuri`): the payload emulates the COM3 I/O board (coins, service, test), plays the touch screen (cursor + DirectInput mouse button events), passes the machine check (`common.log`), native `d3dx9_36` (mesh crash), free play as credits kept at 1 |
+| `omatsuri-yasan-ganso-takoyaki` | Omatsuri Yasan Ganso Takoyaki | arcadepc | user 100% (2026-11-15), 1 player | Cave's takoyaki cooking touch game (Direct3D 9, 32-bit, 1024x768, §6.3i, board `omatsuri`): as Kingyo Sukui, plus the prize dispenser's answer |
+| `quake-arcade-tournament-edition` | Quake: Arcade Tournament Edition | arcadepc | user 100% (2026-11-15), 1 player | Lazer-Tron / LBE Systems' GLQuake cabinet (OpenGL 640x480, 32-bit, §6.3i, board `quakearcade`): its GCI board off (`-nogci`), the payload posts its arcade keys (`AUX1`..`AUX32` through the scan code table) and the mouse look, shows and fits the attract movies' window, `-basedir .` (a map path overflow), free play as the operator's free time, the mouse as the trackball (pedal axes) |
 | `dream-hunting` | Dream Hunting | arcadepc | user 100% (2026-11-12), 1 gun | Dream Gun's hunting game (`DreamGun.exe`, DirectDraw / Direct3D immediate mode 640x480, 32-bit, §6.3i): its COM1 gun board emulated (trigger, coins, test, zoom, walking joystick, the shot's place through the game's calibration), free play by the coin count, the payload's crosshair drawn into its DirectDraw back buffer (the game's mouse reticle hidden), Wine's DirectDraw |
 | `photo-finish-racing` | Photo Finish Racing | arcadepc | user 100% (2026-11-12), 3 players | Competitive Edge Games' horse racing derby (Direct3D 8, 32-bit, §6.3i, board `photofinish`): the ball drop holes (pulses) and credit switches given as the keys it polls, its COM1 relay board emulated, free play as `PhotoFinish.ini`'s `FreePlayMode` (start joins, start again races), 4:3 |
 | `house-of-the-dead-overkill` | The House of the Dead: Overkill | arcadepc | user 100% (2026-11-10), 2 guns | The Typing of the Dead: Overkill's Steam build (BlitzTech, Direct3D 9, 32-bit, §6.3i, board `hotdo`), with gbe_fork's `steam_api.dll` and `steam_settings\` (the game's interface versions): Overkill's menu opened at start (the Typing of the Dead's menu clicked behind a black screen); player 1's gun is the mouse (`GetCursorPos`, DirectInput's system mouse and keyboard); player 2 is a fake online player inside the same game (`hotdo_peer.rs`: Multi Player, Search for online player, Ready), the host running its score, health, reload and weapons; d-pad weapon switch, gun shop cash kept, every level and game mode unlocked (Director's Cut) |
+| `left-4-dead-survivors` | Left 4 Dead: Survivors | nesica | user 100% (2026-11-16), NESiCA card (new player, CPU play), mouse and pad | Type X3 Source engine (§6.2): `bin\inputsystem.dll` loads the payload; Type X3 reader security and commands, FastIO hub/universal board registers, HID mouse and winmm grip emulated, the gun's mouse from the sticks or the mouse (menus point and click), `+arcade_NESiCA_Accept 1`, getCardInfo record for a new card, lobby server answered with no rooms |
+| `groove-coaster-2` | Groove Coaster 2: Heavenly Festival | nesica | user 100% (2026-11-16), boosters, NESiCA card (registration, saves), free play | Type X3 portrait rhythm game (§6.2): windowed 9:16 with black bezel, GetAdaptersInfo MAC for the LAN link, update downloader answered (NESYS thread deadlock under Wine), Type X3 reader with C:\TypeXZEROTemp.dat, the boosters on FastIO, free play patch, Groove Coaster card server (registration, player, song records, settings) |
+| `mario-and-sonic-at-tokyo-2020-olympic-games` | Mario & Sonic at the Tokyo 2020 Olympic Games | alls | user 100% (2026-11-08) | the first ALLS game with its own amdaemon (§6.3l): SystemProperty registry, keychip ioctls, IO4 board, LED board 15093 COM1, sysfile.dat DIP switches and free play, ALL.Net answers, Japan clock, amRtc sync patch, portrait 1080x1920 with the dump's bezel |
+| `house-of-the-dead-scarlet-dawn` | The House of the Dead: Scarlet Dawn | alls | user 100% (2026-11-08), 2 guns | UE 4.18 with its 2018 amdaemon (§6.3l, `WAL_ALLS_BOARD=hotd`): generated ICF (platform ACA1), gun sensor board COM1 (aim, triggers, reload off screen), graphics options in Engine.ini (render scale, FSR), gore restoration rebuilt as a patch pak (`WAL_HOTD_GORE`), 16:9 desktop stretched on 4:3 screens |
+| `sega-world-drivers-championship` | Sega World Drivers Championship | alls | user-tested (2026-11-08): power-on test all GOOD, card registration with name entry, a race, the save, the returning player's licence | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=swdc`): wheel I/O board, Aime reader (automatic card), FFB / LED / dashboard boards, main cabinet LAN, English translation, AimeDB and its game server (player saves) |
+| `initial-d-the-arcade-season-3` | Initial D THE ARCADE Season 3 | alls | user 100% (2026-11-09), online: Aime cards, saves, story and time trial | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=idac`), SDGT 2.30: maintenance hours skipped (`WAL_ALLS_TIMEWARP`), ALL.Net accounting off, its game server, automatic Aime card after start or the gas, borderless 16:9 window centered |
+| `initial-d-the-arcade-season-5` | Initial D THE ARCADE Season 5 | alls | headless tests (2026-11-11): attract, story and time trial races to the finish; user: races slow on an integrated GPU (the game runs one physics step per frame), box test pending | Season 3's profile and game server (§6.3l), SDGT 3.10 from decrypted memory dumps: race settings' check values, IndRun's anti-tamper verdict, the early RetireRace and the goal counters fixed |
+| `chrono-regalia` | Chrono Regalia | alls | user 100% (2026-11-10): guest and Aime card play | Unity 64-bit satellite seat (§6.3l, `WAL_ALLS_BOARD=hkb`, keychip ACA2) alone: no matching or store terminal, Unity's mouse from the gun or mouse (touch on b1, red dot), free play, a local game server in the game's process (card players' data saved), automatic Aime card armed by a touch |
+| `xtom-3d` | Xtom 3D | arcadepc | user 100% (2026-11-09) | Jamie System DOS / 3dfx game in the dump's Glide DOSBox (§6.3i, board `dosbox`): DOSBox's SDL keyboard from the virtual sticks (the real devices dropped), the runner's gxvk in a payload window, 4:3 centered with a black bezel |
+| `sega-rally-2` | Sega Rally 2 | arcadepc | user 100% (2026-11-12), wheel | 25th Anniversary Edition repack 2.1.0 (§6.3i, board `segarally2`): installed with Wine, MUSASHI COM libraries registered, the gas accepts in the menus, FFB, 16:9 / 4:3 (`WAL_SR2_ASPECT`) |
+| `cut-the-rope` | Cut The Rope | arcadepc | user 100% (2026-11-13) | ZeptoLab's redemption conversion (.NET MonoGame, portrait 1080x1920, §6.3i, board `cuttherope`): under Wine the game reads the MonoGame mouse (touches) and keyboard (operator keys), played from the gun or mouse and the virtual sticks; free play seeded in `options.dat` (c_folders) |
+| `go-go-drummer-babe` | Go Go Drummer Babe | arcadepc | user 100% (2026-11-13) | HGE drum medal game (Direct3D 8, 640x480, §6.3i, board `gogodrummer`): the HGE keyboard answered from the virtual sticks (drums '5'-'8' on L1/L2/R1/R2, coin '1'), free play in `Set.ini` |
+| `radikal-bikers` | Radikal Bikers | arcadepc | user 100% (2026-11-14) | Gaelco 3D board emulator `radikalb.exe` (Direct3D 8, §6.3i, board `radikalbikers`): setup dialog answered, its input reader from the virtual stick, `radikalb.dat` saved on change, free play by a coin on start |
+| `project-diva-arcade` | Hatsune Miku Project DIVA Arcade | ringedge | user 100% (2026-11-15, desktop) | RingEdge 2 (§6.3d), SBTY 6.00.01, OpenGL: NVIDIA assembly translated for Mesa, touch panel and pointer, lamp control board (`WAL_RINGEDGE_DIVA_LAMP`), free play, open all day (closing time), automatic card after start or a touch; Y: a folder of its own (the game formats it) |
+| `border-break-scramble` | Border Break Scramble | ringedge2 | user (2026-11-15): "working 100% excluding online mode" | RingEdge 2 NRS engine (§6.3d), SBVA 4.5.0, OpenGL: its NV_gpu_program4 shaders translated, JVS left grip and move stick, raw input aim mouse listed, the mouse or stick as touch pointer (red dot), free play, the extended image's markers |
+| `kancolle-arcade` | KanColle Arcade | seganu | user 100% (2026-11-15): guest and Aime card play | Sega Nu (§6.3m), SDBZ 7.40, 64-bit: NVIDIA-only OpenGL translated (`WAL_NVGL`: unified memory, command lists, bindless), WGL_NV_DX_interop for its movies, ALL.Net, billing, ICF, AimeDB, Aime COM10, 3M touch COM1, its title server (admirals, sorties, drops, progress per Aime card) |
+| `crossbeats-rev` | crossbeats REV. | alls | user 100% (2026-11-16, desktop): mouse with the red dot, touchpad multi-touch | SUNRiSE's predecessor (§6.3l, `WAL_ALLS_BOARD=cxb`), SDCA: options read up to the executable's last folder, the game server answering requests up to version 10102 (ARTEMiS' REV. tables, songs and events the options hold, REV.'s saves), touches in its 1920x1080 layout (`WAL_CXB_TOUCH`) |
 
 Wine's builtin DirectSound breaks several games in ways that do not look like sound bugs
 (Crimzon Clover's window/mixer sizes, Dragon Dance's crash, Homura stuck loading, Exception and

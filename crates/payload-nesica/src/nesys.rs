@@ -279,6 +279,11 @@ fn net(name: &str, default: &str) -> String {
     std::env::var(format!("WAL_NESICA_{name}")).unwrap_or_else(|_| default.to_string())
 }
 
+/// The card id of a card request (16 characters).
+fn card_id_text(data: &[u8]) -> String {
+    data.iter().take(16).take_while(|c| **c != 0).map(|c| *c as char).collect()
+}
+
 fn card_file(card_id: &[u8], data_type: u32) -> String {
     let id: String = card_id.iter().take(16).take_while(|c| **c != 0).map(|c| *c as char).collect();
     format!("{}\\card_{id}_{data_type}.bin", crate::drive::data_dir())
@@ -302,6 +307,43 @@ fn session_xml(param: &[u8]) -> String {
         tag("card_id"),
         tag("mac_addr")
     )
+}
+
+/// The card server's detail records read (`<offset>`, `<row_count>`): `/root/card_detail/record`.
+const CARD_DETAIL_READ: u32 = 261;
+
+/// A detail records write (`<datas>` of `<data>` records, read + 512, Street Fighter V): the
+/// records merged into the saved read answer `saved` (a record of the same `pcol1`-`pcol3`
+/// replaced), the new answer.
+fn xml_detail_write(card: &[u8], saved: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(card);
+    let saved = String::from_utf8_lossy(saved);
+    let blocks = |text: &str, name: &str| -> Vec<String> {
+        let (open, close) = (format!("<{name}>"), format!("</{name}>"));
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find(&open).map(|i| i + open.len()) {
+            let Some(end) = rest[start..].find(&close) else { break };
+            out.push(rest[start..start + end].to_string());
+            rest = &rest[start + end + close.len()..];
+        }
+        out
+    };
+    let card_id = blocks(&text, "card_id").into_iter().next().unwrap_or_default();
+    let datas = blocks(&text, "datas").into_iter().next()?;
+    let key = |record: &str| ["pcol1", "pcol2", "pcol3"].map(|k| blocks(record, k).into_iter().next().unwrap_or_default());
+    let mut records = blocks(&saved, "record");
+    for data in blocks(&datas, "data") {
+        let data = data.replace("<card_id/>", "");
+        let data = match data.contains("<card_id>") {
+            true => data,
+            false => format!("\r\n\t\t\t<card_id>{card_id}</card_id>{data}"),
+        };
+        records.retain(|r| key(r) != key(&data));
+        records.push(data);
+    }
+    let records: String = records.iter().map(|r| format!("\r\n\t\t<record>{r}</record>")).collect();
+    Some(format!("<?xml version='1.0' encoding='UTF-8'?>\r\n<root>\r\n\t<card_detail>{records}\r\n\t</card_detail>\r\n</root>\r\n"))
 }
 
 /// Card server XML data types (Fighting EX Layer): a write is its read + 512, its `<data>`
@@ -347,6 +389,48 @@ fn with_player_name(card: Vec<u8>) -> Vec<u8> {
     };
     let name = name.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
     format!("{}{name}{}", &text[..start], &text[end..]).into_bytes()
+}
+
+/// `WAL_NESYS_NEW_CARD=l4ds`: the answer to a card select of data type 1 for a card without a
+/// save (Left 4 Dead: Survivors). The game parses it as its card server's `getCardInfo`: lines of
+/// result (below 100), API id, card id, player id, player name (UTF-8, `WAL_NESICA_PLAYER_NAME`,
+/// default PLAYER), title, level, score, the classes (names, points, ids), clan id and name, home
+/// arcade id and name (empty: the cabinet's), character (1-based), the six avatar parts (0: none,
+/// no resource and color lines), skill items, title id and name, weapons (counts 0), experience,
+/// equipment changed (0), logins, versus plays and wins. Zeros instead: "the NESiCA could not be
+/// read".
+fn new_card(card_id: &[u8], data_type: u32) -> Option<Vec<u8>> {
+    if data_type != 1 || std::env::var("WAL_NESYS_NEW_CARD").map_or(true, |v| v != "l4ds") {
+        return None;
+    }
+    let id: String = card_id.iter().take(16).take_while(|c| **c != 0).map(|c| *c as char).collect();
+    let name = std::env::var("WAL_NESICA_PLAYER_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "PLAYER".into());
+    let name = name.replace('\n', " ");
+    let lines: [&str; 34] = [
+        "1", "getCardInfo", &id, "1", &name, "1", "1", "0", "", "", "0", "0", "0", "0", "", "", "", "", "1", "0", "0", "0",
+        "0", "0", "0", "0", "0", "", "0", "0", "0", "1", "0", "0",
+    ];
+    Some(lines.iter().map(|l| format!("{l}\n")).collect::<String>().into_bytes())
+}
+
+/// Card statuses of the NESYS card server: an unregistered card, no reissue reserved.
+const CARD_UNREGISTERED: u32 = 23;
+const CARD_NO_REISSUE: u32 = 27;
+
+/// `WAL_NESYS_REGISTER=1` (Magician's Dead): cards are registered by the game (card insert)
+/// before their data is read.
+fn register() -> bool {
+    std::env::var("WAL_NESYS_REGISTER").is_ok_and(|v| v == "1")
+}
+
+/// The file marking a registered card.
+fn registered_file(card_id: &[u8]) -> String {
+    let id: String = card_id.iter().take(16).take_while(|c| **c != 0).map(|c| *c as char).collect();
+    format!("{}\\card_{id}_registered", crate::drive::data_dir())
+}
+
+fn registered(card_id: &[u8]) -> bool {
+    std::path::Path::new(&registered_file(card_id)).exists()
 }
 
 fn card_status(times: u32, data: &[u8]) -> Vec<u8> {
@@ -409,16 +493,52 @@ fn handle(pipe: &Pipe, command: u32, data: &[u8]) {
         | GAME_FREE_END_REQUEST => {
             send(pipe, GAME_STATUS_REPLY, &[])
         }
+        // Groove Coaster 2: its card server (groovecoaster_server.rs)
+        CARD_SELECT_REQUEST
+            if crate::groovecoaster::detected()
+                && let Some((status, mut card)) = crate::groovecoaster_server::select(
+                    &card_id_text(data),
+                    u32_at(data, 16),
+                    &String::from_utf8_lossy(&data[24.min(data.len())..]),
+                ) =>
+        {
+            if !card.is_empty() {
+                card.push(0);
+            }
+            send(pipe, CARD_SELECT_REPLY, &Out::default().u32(status).u32(100).u32(100).u32(card.len() as u32).bytes(&card).0);
+        }
+        CARD_UPDATE_REQUEST if crate::groovecoaster::detected() => {
+            let size = (u32_at(data, 28) as usize).min(data.len().saturating_sub(32));
+            let xml = String::from_utf8_lossy(&data[32.min(data.len())..32 + size]).into_owned();
+            let status = crate::groovecoaster_server::update(&card_id_text(data), u32_at(data, 24), &xml);
+            send(pipe, CARD_UPDATE_REPLY, &Out::default().u32(status).u32(100).u32(100).u32(0).0);
+        }
+        CARD_INSERT_REQUEST if crate::groovecoaster::detected() => {
+            log!("nesys: card insert {:?} type {} data {:?}", card_id_text(data), u32_at(data, 16), String::from_utf8_lossy(&data[20.min(data.len())..]));
+            let text = String::from_utf8_lossy(data);
+            let xml = text.find("<?xml").map_or("", |i| &text[i..]);
+            let status = crate::groovecoaster_server::register(&card_id_text(data), xml);
+            send(pipe, CARD_INSERT_REPLY, &Out::default().u32(status).u32(0).u32(0).u32(0).0)
+        }
         CARD_SELECT_REQUEST => {
             // { char cardId[16]; u32 dataType; u32 paramSize; ... }
             let file = card_file(data, u32_at(data, 16));
             if std::env::var("WAL_NESYS_HTTP_DUMP").is_ok_and(|v| v == "1") {
                 let param = &data[24.min(data.len())..];
-                log!("nesys: card select type {} param {:?}", u32_at(data, 16), String::from_utf8_lossy(param));
+                log!("nesys: card select {:?} type {} param {:?}", String::from_utf8_lossy(&data[..16.min(data.len())]), u32_at(data, 16), String::from_utf8_lossy(param));
             }
             let mut card = std::fs::read(&file).unwrap_or_default();
+            if card.is_empty()
+                && let Some(new) = new_card(data, u32_at(data, 16))
+            {
+                card = new;
+            }
             if card.is_empty() && u32_at(data, 16) == CARD_GET_SESSION {
                 card = session_xml(&data[24.min(data.len())..]).into_bytes();
+            }
+            // the card's detail records (Street Fighter V): none yet
+            if card.is_empty() && u32_at(data, 16) == CARD_DETAIL_READ {
+                card = b"<?xml version='1.0' encoding='UTF-8'?>\r\n<root>\r\n\t<card_detail>\r\n\t</card_detail>\r\n</root>\r\n".to_vec();
             }
             if u32_at(data, 16) == CARD_XML_READS[0].0 && !card.is_empty() {
                 card = with_player_name(card);
@@ -428,9 +548,35 @@ fn handle(pipe: &Pipe, command: u32, data: &[u8]) {
             if card.len() == 1 {
                 card = vec![0; 16384];
             }
-            send(pipe, CARD_SELECT_REPLY, &card_status(100, &card));
+            // `WAL_NESYS_REGISTER=1`: a card the game has not registered (card insert) is
+            // "unregistered" (status 23): the game offers a reissue, then a new registration; a
+            // registered card without saved data answers no data
+            let status = if register() && !registered(data) { CARD_UNREGISTERED } else { 1 };
+            if register() && (status != 1 || card.iter().all(|b| *b == 0)) {
+                card.clear();
+            }
+            send(pipe, CARD_SELECT_REPLY, &Out::default().u32(status).u32(100).u32(100).u32(card.len() as u32).bytes(&card).0);
         }
-        CARD_INSERT_REQUEST => send(pipe, CARD_INSERT_REPLY, &Out::default().u32(1).u32(0).u32(0).u32(0).0),
+        CARD_INSERT_REQUEST => {
+            // { char cardId[16]; u32 dataType; u32 dataSize; data }
+            // Street Fighter V: { char cardId[16]; u32 dataType (1); u32; u32 writeType; u32
+            // dataSize; data }, a card server XML write of the new card's fields: saved as the
+            // answer of the card read (type 259)
+            let size = (u32_at(data, 28) as usize).min(data.len().saturating_sub(32));
+            if u32_at(data, 16) == 1
+                && let Some((read_type, answer)) = xml_card_write(&data[32.min(data.len())..32 + size], CARD_XML_READS[0].0 + 512)
+            {
+                let file = card_file(data, read_type);
+                if let Err(e) = std::fs::write(&file, answer) {
+                    log!("nesys: cannot save {file}: {e}");
+                }
+            }
+            if register() {
+                log!("nesys: card insert {:?} type {} data {:02x?}", String::from_utf8_lossy(&data[..16.min(data.len())]), u32_at(data, 16), &data[16.min(data.len())..]);
+                let _ = std::fs::write(registered_file(data), b"");
+            }
+            send(pipe, CARD_INSERT_REPLY, &Out::default().u32(1).u32(0).u32(0).u32(0).0)
+        }
         CARD_UPDATE_REQUEST => {
             // { char cardId[16]; u32 frequency; u32 transferMode; u32 dataType; u32 dataSize; data }
             let size = (u32_at(data, 28) as usize).min(data.len().saturating_sub(32));
@@ -440,8 +586,14 @@ fn handle(pipe: &Pipe, command: u32, data: &[u8]) {
                 log!("nesys: card update type {} data {:?}", u32_at(data, 24), String::from_utf8_lossy(card));
             }
             // card server XML writes: saved as the answer of their read
+            let detail = card_file(data, CARD_DETAIL_READ);
             let (file, saved) = match xml_card_write(card, u32_at(data, 24)) {
                 Some((read_type, answer)) => (card_file(data, read_type), answer.into_bytes()),
+                None if u32_at(data, 24) == CARD_DETAIL_READ + 512
+                    && let Some(answer) = xml_detail_write(card, &std::fs::read(&detail).unwrap_or_default()) =>
+                {
+                    (detail, answer.into_bytes())
+                }
                 None => (file, card.to_vec()),
             };
             if let Err(e) = std::fs::write(&file, &saved) {
@@ -452,7 +604,15 @@ fn handle(pipe: &Pipe, command: u32, data: &[u8]) {
         // Fighting EX Layer, at a card insertion: { char cardId[16]; u32 }. The reply is a card
         // status as the other card replies (the client parses 0x111-0x119 alike); the game only
         // checks its status (1), without it it waits on the card screen until its timeout.
-        CARD_REISSUE_TEST_REQUEST => send(pipe, CARD_REISSUE_TEST_REPLY, &card_status(100, &[])),
+        // Groove Coaster 2: no reissue reserved, an unregistered card is a new player
+        CARD_REISSUE_TEST_REQUEST if crate::groovecoaster::detected() => {
+            send(pipe, CARD_REISSUE_TEST_REPLY, &Out::default().u32(CARD_NO_REISSUE).u32(100).u32(100).u32(0).0)
+        }
+        CARD_REISSUE_TEST_REQUEST => {
+            // `WAL_NESYS_REGISTER=1`: no reissue reserved (status 27): a new registration
+            let status = if register() { CARD_NO_REISSUE } else { 1 };
+            send(pipe, CARD_REISSUE_TEST_REPLY, &Out::default().u32(status).u32(100).u32(100).u32(0).0)
+        }
         CARD_REISSUE_REQUEST => send(pipe, CARD_REISSUE_REPLY, &card_status(100, &[])),
         INCOME_START_REQUEST | INCOME_END_REQUEST | INCOME_CONTINUE_REQUEST | INCOME_FREE_START_REQUEST => {
             send(pipe, INCOME_STATUS_REPLY, &Out::default().u32(0).u32(1).0)

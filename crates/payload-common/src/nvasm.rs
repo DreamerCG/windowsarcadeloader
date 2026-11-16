@@ -27,8 +27,10 @@
 //!   it and the game feeds it; vertex inputs Mesa refuses together ([`vertex_inputs`]) as the
 //!   ones NVIDIA aliases them with.
 //!
-//! `NV_fragment_program` programs (`!!FP1.0`) too, and NV_gpu_program4 ones (`!!NVvp4.0` /
-//! `!!NVfp4.0`) through [`gpu_program4`]. Programs with `REP` loops without
+//! `NV_fragment_program` programs (`!!FP1.0`) too, NV_gpu_program4 ones (`!!NVvp4.0` /
+//! `!!NVfp4.0`) through [`gpu_program4`], and NV_gpu_program5 vertex programs (`!!NVvp5.0`,
+//! Project DIVA Arcade Future Tone's skinning: its parameter buffer as local parameters) through
+//! [`gpu_program5`]. Programs with `REP` loops without
 //! `WAL_RINGEDGE_CG_REPEAT`, other loops, backward branches or other formats: `None`.
 
 const BASES: [&str; 50] = [
@@ -43,26 +45,45 @@ pub(crate) const TEXEL_LOCAL: u32 = 240;
 /// The fragment programs' local parameters `LEVELS_LOCAL + n`: the last level of texture
 /// unit n's texture (`TXL`).
 pub(crate) const LEVELS_LOCAL: u32 = 240;
+/// The fragment programs' texture unit `LEVEL1_UNIT + n`: unit n's texture (`TXL`) with its level
+/// of detail held at 1 (the payload binds it before each draw), its level 1 read exactly.
+pub(crate) const LEVEL1_UNIT: u32 = 16;
 /// NV_gpu_program4's vertex programs' instance (`vertex.instance`, absent in ARB): their local
-/// parameter `INSTANCE_LOCAL`, 0 (the game's draws are not instanced).
+/// parameter `INSTANCE_LOCAL`, set by the payload's instanced draws (one draw per instance).
 pub(crate) const INSTANCE_LOCAL: u32 = 239;
 /// NV_gpu_program4's generic interpolant 0 (`result.attrib[0]` / `fragment.attrib[0]`, absent in
 /// ARB): Border Break Scramble's vertex programs write their object's color there, the vertex
 /// environment parameter `ATTRIB_ENV` (its `env[instance + 59]`), which the payload copies to
 /// the fragment environment parameter `ATTRIB_ENV` its fragment programs read instead.
 pub(crate) const ATTRIB_ENV: u32 = 59;
+/// NV_parameter_buffer_object's vertex parameter buffer 0 (`program.buffer[0]`, absent in Mesa):
+/// the vertex programs' local parameters `PALETTE_LOCAL..PALETTE_LOCAL + PALETTE_LEN`, the
+/// buffer's contents copied there by the payload before each draw (Project DIVA Arcade Future
+/// Tone's skinning matrices: 256 bones of 3 rows).
+pub(crate) const PALETTE_LOCAL: u32 = 256;
+pub(crate) const PALETTE_LEN: u32 = 768;
 
 const ZERO: &str = "{0,0,0,0}";
 const ONE: &str = "{1,1,1,1}";
 const BIG: &str = "{1e30,1e30,1e30,1e30}";
 
-/// A program for NVIDIA GPUs only: NVIDIA options or formats.
+/// A program for NVIDIA GPUs only: NVIDIA options or formats, or texture arrays
+/// ([`texture_arrays`]).
 pub(crate) fn nvidia(text: &str) -> bool {
     // the option after any blanks (Border Break Scramble's `OPTION\t\tNV_fragment_program2`)
     text.split("OPTION").skip(1).any(|r| r.starts_with(char::is_whitespace) && r.trim_start().starts_with("NV_"))
         || text.starts_with("!!FP")
         || text.starts_with("!!VP")
         || text.starts_with("!!NV")
+        || texture_arrays(text)
+}
+
+/// A program sampling texture arrays (`ARRAY1D`, `ARRAY2D` targets): ARB programs on Mesa have
+/// none (no `MESA_texture_array` any more), the program refused. Border Break Scramble's is its
+/// shadow maps' debug view (FUN_00888600), its refusal stopping the attract after the logo:
+/// sampled as a 1D / 2D texture instead (its first layer's place).
+fn texture_arrays(text: &str) -> bool {
+    text.contains("ARRAY1D") || text.contains("ARRAY2D")
 }
 
 /// `(base opcode, updates the condition code, saturates)`.
@@ -557,7 +578,7 @@ fn gpu_program4(text: &str) -> Option<String> {
                 Some(j) => (inner[..j].trim(), &inner[j..]),
                 None => (inner, ""),
             };
-            if !reg.is_empty() && reg.starts_with(|c: char| c.is_ascii_alphabetic()) && reg.contains('.') && !reg.contains("..") {
+            if !reg.is_empty() && reg.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && reg.contains('.') && !reg.contains("..") {
                 if !vertex || relative.as_deref().is_some_and(|r| r != reg) {
                     return None;
                 }
@@ -591,7 +612,77 @@ fn gpu_program4(text: &str) -> Option<String> {
     Some(text)
 }
 
+/// An NV_gpu_program5 vertex program (`!!NVvp5.0`, Project DIVA Arcade Future Tone's skinning)
+/// as an NV_gpu_program4 one ([`gpu_program4`]): its parameter buffer array
+/// (`BUFFER4 m[] = { program.buffer[0] }`) as the local parameters [`PALETTE_LOCAL`]; its integer
+/// temporaries converted from a float (`CVT.S32.F32 a, f`: the bone indices, whole numbers) read
+/// as that float, which relative addressing floors. Other integer temporaries or buffers: `None`.
+fn gpu_program5(text: &str) -> Option<String> {
+    let stmts = statements(text);
+    let mut out = vec!["!!NVvp4.0".to_string()];
+    // the integer temporaries, the float each one was converted from
+    let mut ints: Vec<(String, Option<String>)> = Vec::new();
+    for s in &stmts[1..] {
+        if let Some(names) = s.strip_prefix("INT TEMP ") {
+            ints.extend(names.split(',').map(|n| (n.trim().to_string(), None)));
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix("BUFFER4 ").or_else(|| s.strip_prefix("BUFFER ")) {
+            let (name, binding) = rest.split_once('=')?;
+            let name = name.trim().strip_suffix("[]")?.trim();
+            if binding.replace(' ', "") != "{program.buffer[0]}" {
+                return None;
+            }
+            out.push(format!("PARAM {name}[{PALETTE_LEN}] = {{ program.local[{PALETTE_LOCAL}..{}] }}", PALETTE_LOCAL + PALETTE_LEN - 1));
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix("CVT.S32.F32 ") {
+            let (dst, src) = rest.split_once(',')?;
+            let src = src.trim();
+            if !src.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return None;
+            }
+            ints.iter_mut().find(|(n, _)| n == dst.trim())?.1 = Some(src.to_string());
+            continue;
+        }
+        let mut s = s.clone();
+        for (name, src) in &ints {
+            s = replace_word(&s, name, src.as_deref())?;
+        }
+        out.push(s);
+    }
+    let mut text = out[0].clone() + "\n";
+    for s in &out[1..] {
+        text.push_str(s);
+        text.push_str(if s.ends_with(':') { "\n" } else { ";\n" });
+    }
+    Some(text)
+}
+
+/// `name` (a whole word) in `s` replaced with `with`; `None` if it is there and `with` is `None`.
+fn replace_word(s: &str, name: &str, with: Option<&str>) -> Option<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find(name) {
+        let before = rest[..i].chars().last();
+        let after = rest[i + name.len()..].chars().next();
+        out.push_str(&rest[..i]);
+        if before.is_some_and(ident) || after.is_some_and(ident) {
+            out.push_str(name);
+        } else {
+            out.push_str(with?);
+        }
+        rest = &rest[i + name.len()..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
 pub(crate) fn translate(text: &str) -> Option<String> {
+    if text.starts_with("!!NVvp5.0") {
+        return translate_converted(&gpu_program4(&gpu_program5(text)?)?);
+    }
     if text.starts_with("!!FP1.0") {
         return translate(&fp10(text)?);
     }
@@ -855,7 +946,7 @@ fn translate_converted(text: &str) -> Option<String> {
         let (reg, mask, cond) = destination(&parts[0])?;
         // a texel offset (`TEX r, c, texture[0], 2D, (-1, 0)`, NV_gpu_program4) dropped: DIVA's
         // blur filters sample their center only
-        let mut sources: Vec<String> = parts[1..].iter().filter(|x| !x.starts_with('(')).map(|x| if shadow_samplers() { x.to_string() } else { x.replace("SHADOW2D", "2D").replace("SHADOWRECT", "RECT").replace("SHADOWCUBE", "CUBE").replace("SHADOW1D", "1D") }).collect();
+        let mut sources: Vec<String> = parts[1..].iter().filter(|x| !x.starts_with('(')).map(|x| if shadow_samplers() { x.to_string() } else { x.replace("SHADOW2D", "2D").replace("SHADOWRECT", "RECT").replace("SHADOWCUBE", "CUBE").replace("SHADOW1D", "1D") }).map(|x| match x.as_str() { "ARRAY2D" => "2D".to_string(), "ARRAY1D" => "1D".to_string(), _ => x }).collect();
         if base == "ARL" {
             let src = sources.first()?;
             let (value, sw) = split_swizzle(src);
@@ -960,13 +1051,23 @@ fn translate_converted(text: &str) -> Option<String> {
             // the level as a bias past the computed one (no explicit level in ARB): the base
             // level far below it, the texture's last one (`LEVELS_LOCAL + n`, the payload's)
             // far above it, the others a quarter above (exact on a texture drawn 1:1). Project
-            // DIVA Arcade's YCbCr sprites: luma in level 0, chroma in level 1, the last one
+            // DIVA Arcade's YCbCr sprites: luma in level 0, chroma in level 1, the last one.
+            // Level 1 below the last one (Border Break Scramble's YCbCr textures: luma, Cr, Cb
+            // in levels 0, 1, 2; biased, its Cr took some luma: the bright places pink): read
+            // exactly from unit `LEVEL1_UNIT + n`, the same texture with its level of detail
+            // held at 1 (the payload's sampler)
             "TXL" if fragment => {
                 let (coord, rest) = sources.split_first()?;
                 let unit = rest.first().and_then(|t| t.strip_prefix("texture[")?.strip_suffix(']')?.parse::<u32>().ok())?;
+                let level1 = rest.get(1).is_some_and(|t| t == "2D") && unit < LEVEL1_UNIT;
                 add_temp(&mut temps, "_wE");
                 add_temp(&mut temps, "_wF");
                 out.push(format!("MOV _wE, {coord};"));
+                if level1 {
+                    add_temp(&mut temps, "_wG");
+                    add_temp(&mut temps, "_wH");
+                    out.push("MOV _wG.x, _wE.w;".into());
+                }
                 out.push(format!("SUB _wF.y, _wE.w, program.local[{}].x;", LEVELS_LOCAL + unit));
                 out.push("SGE _wF.y, _wF.y, {-0.5,-0.5,-0.5,-0.5};".into());
                 out.push("SGE _wF.x, _wE.w, {0.5,0.5,0.5,0.5};".into());
@@ -975,7 +1076,19 @@ fn translate_converted(text: &str) -> Option<String> {
                 out.push("MAD _wE.w, _wF.y, _wF.z, _wE.w;".into());
                 out.push("ADD _wF.z, _wE.w, {16,16,16,16};".into());
                 out.push("MAD _wE.w, _wF.x, _wF.z, {-16,-16,-16,-16};".into());
-                out.push(format!("TXB{satx} {dst}, _wE, {};", rest.join(", ")));
+                if !level1 {
+                    out.push(format!("TXB{satx} {dst}, _wE, {};", rest.join(", ")));
+                } else {
+                    // level 1 (0.5 to 1.5) of a texture with more levels: the exact read
+                    out.push("SGE _wF.x, _wG.x, {0.5,0.5,0.5,0.5};".into());
+                    out.push("SLT _wF.y, _wG.x, {1.5,1.5,1.5,1.5};".into());
+                    out.push("MUL _wF.x, _wF.x, _wF.y;".into());
+                    out.push(format!("SGE _wF.y, program.local[{}].x, {{1.5,1.5,1.5,1.5}};", LEVELS_LOCAL + unit));
+                    out.push("MUL _wG.y, _wF.x, _wF.y;".into());
+                    out.push(format!("TEX _wH, _wE, texture[{}], 2D;", LEVEL1_UNIT + unit));
+                    out.push(format!("TXB _wF, _wE, {};", rest.join(", ")));
+                    out.push(format!("LRP{satx} {dst}, _wG.y, _wH, _wF;"));
+                }
             }
             "LRP" if !fragment => {
                 let [t, a, b] = sources.as_slice() else { return None };

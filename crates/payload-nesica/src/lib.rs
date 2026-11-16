@@ -10,21 +10,50 @@
 //!
 //! Theatrhythm Final Fantasy All-Star Carnival (Unity) calls three native plugins instead: the
 //! same DLL is installed under their names (`theatrhythm.rs`).
+//!
+//! Magician's Dead (Unreal) loads its I/O board DLL and the Leap Motion SDK: this DLL is both
+//! (`magiciansdead.rs`, `leap.rs`).
+//!
+//! Street Fighter V Type Arcade (Unreal) loads Taito's USB I/O library: this DLL is it
+//! (`sfv.rs`).
+//!
+//! Groove Coaster 2 (`WAL_NESICA_GAME=groovecoaster`): `groovecoaster.rs`.
+//!
+//! Tetote X Connect (Unity) is loaded at its executable's entry point; its native plugins'
+//! functions are the payload's (`tetote.rs`).
 
 #![allow(non_snake_case)]
 
 mod crypttrace;
 mod drive;
 mod fastio;
+mod grip;
+mod groovecoaster;
+mod groovecoaster_server;
+mod hidmouse;
+mod lobby;
+// 64-bit only (Magician's Dead; the Leap SDK's MSVC x64 names)
+#[cfg(target_pointer_width = "64")]
+mod leap;
+#[cfg(target_pointer_width = "64")]
+mod magiciansdead;
+#[cfg(target_pointer_width = "64")]
+mod magiciansdead_server;
+mod mouse;
 mod nesys;
 mod nesystrace;
 mod nxl2;
 mod rfid;
+// 64-bit only (Street Fighter V Type Arcade)
+#[cfg(target_pointer_width = "64")]
+mod sfv;
 mod theatrhythm;
 mod theatrhythm_mono;
 mod theatrhythm_nesys;
 mod theatrhythm_player;
 mod theatrhythm_server;
+mod tetote;
+mod tetote_server;
 
 use std::ffi::c_void;
 use wal_payload_common::{log, patches};
@@ -45,6 +74,10 @@ pub extern "system" fn DllMain(module: HINSTANCE, reason: u32, _reserved: *mut c
         // after drive: its CreateFile hooks chain in front of the D: redirection
         rfid::init();
         fastio::init();
+        hidmouse::init();
+        grip::init();
+        mouse::init();
+        lobby::init();
         crypttrace::init();
         nesystrace::init();
         if std::env::var("WAL_NESICA_NESYS").map_or(true, |v| v != "0") {
@@ -55,6 +88,20 @@ pub extern "system" fn DllMain(module: HINSTANCE, reason: u32, _reserved: *mut c
         }
         if theatrhythm::detected(module) {
             theatrhythm::init();
+        }
+        #[cfg(target_pointer_width = "64")]
+        if magiciansdead::detected(module) {
+            magiciansdead::init();
+        }
+        #[cfg(target_pointer_width = "64")]
+        if sfv::detected(module) {
+            sfv::init();
+        }
+        if tetote::detected() {
+            tetote::init();
+        }
+        if groovecoaster::detected() {
+            groovecoaster::init();
         }
         log!("nesica: initialized");
     }
