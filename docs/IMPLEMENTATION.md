@@ -976,6 +976,39 @@ gs2_pv1), a guest play (mode and course select, briefing, the mission). NESiCA p
 Game speed: as the original's (the menus' fast animations compared with YouTube videos).
 User: game 100% working on the desktop (2026-11-17).
 
+#### Gunslinger Stratos 3 (Type X3, 64-bit)
+
+Square Enix / Taito, 2017, `game.exe` 2.46 JPN (64-bit, Direct3D 11): Gunslinger Stratos 2's
+cabinet and code base. Profile `nesica/gunslinger-stratos-3`, the same `WAL_NESICA_GAME=gunslinger`
+(`gunslinger.rs`): the sensor boards, the reader, FastIO, controls and lightguns as above. New:
+
+* **Headset amplifier** (COM4, 9600 baud 8N1, the voice chat's headset): a text protocol, commands
+  ending with LF, answers with CR, polled by its own thread. `GNA` the name, `GVE` the version,
+  then `GAP` every cycle: `VNddHVddMGddHS0dMS0d` (volume at most 40, headphone volume and
+  microphone gain at most 31, headset plugged, microphone on); `SVNdd` / `SHVdd` / `SMGdd` /
+  `SMR0|1` set them (any 3-character answer). Without it the game's update stalled: the screen
+  froze on the first boot's G device setting (FastIO read, nothing drawn). `gunslinger::amplifier`.
+* **Sound device error 10000008**: Silicon Studio's Wwise (v2013.1.2, XAudio2 2.7) opens the
+  XAudio2 device whose name contains "スピーカー" (Shift-JIS, the cabinet's speakers; "Digital
+  Output" the second device), else its mastering voice fails (device index 0x100), no output
+  device is counted and the system check raises 10000008. The profile's `WAL_PATCHES` empties the
+  pattern (+0x27703B8): the first device.
+* **Free play** (the common option): the credit control shows FREEPLAY when the settings object
+  (pointer +0x310BD08, constructor store +0x3F0903) has +0x100 (free play) or +0xBC set; the
+  payload keeps +0x100 as the option says. +0xF0 is no longer free play in this build (a 0-9
+  level of the sound code), so the settings fields are per executable.
+* **First boot**: the G device setting (board ID, then 照準調整に進む), as Gunslinger Stratos 2.
+* **Voice chat** (TeamSpeak 3 client, `ts3client_win64.dll`): no server, its HUD showed a red
+  "ボイスチャットサーバーに接続できません【ボイスチャット使用不可】" box all the time. The HUD update
+  (+0x6BC300) returns at once when voice chat is off (+0xB0 of the object at +0x310BAC8 zero):
+  the profile's patch makes that branch unconditional (+0x6BC383 `jmp`). Its own "Realtek Digital
+  Output" playback device lookup only affects the chat.
+
+Verified headless: first boot G device setting, test menu (main menu, system settings: free play,
+continues), attract in free play with its movies (BYKING intro, gs3_pv1), a guest play (NESiCA
+screen, character, mode and course select, briefing, the mission: moving, aiming, shooting).
+NESiCA play unavailable (no game server).
+
 ### 6.2b NESiCAxLive 2 (system `nesica2`, `crates/payload-nesica/src/nxl2.rs`)
 
 NESiCAxLive 2 games (Million Arthur Arcana Blood) import `NxL2Core.dll` instead of the FastIO
@@ -2460,6 +2493,23 @@ game's amLib (its own error strings name every function):
   837-14572, moved to payload-common `jvs_board.rs`) answers through `serial::transact`. The
   sense line is DSR: modem status 0x10 before the address, 0x30 after (with the Type X values
   amJvs assigns 31 boards: error 6401 "JVS I/O board is not connected").
+- **Shining Force Cross Raid / Elysion** (`WAL_RINGEDGE_ALLNET=shiningforce`,
+  `sfcserver.rs`). Project DIVA Arcade's engine with an online title server: its HTTP client
+  (`RINGEDGE-PRJF/1.0`, `/SBVB/` on the router) posts fixed size big-endian structures, zlib
+  packed (`x-rd2-*` headers), each starting with the protocol version (Raid `0xC93D8B0E`,
+  Elysion `0xDDBC372D`) and its command; the answers must have the exact size of their
+  `NetData*Response` class (vtable + 0x30, the command at + 0x34): per-game tables. The
+  player's data is the IC card's: `start_response` and `item_response` hand back the
+  request's `card_body` (6604 / 8342 bytes on the wire), the game writes the card after a
+  quest. The card is the game's development card in files (`iccd::usb::DeviceUSB`:
+  `iccard.txt` / `iccard.bin` at a drive's root, the profile's `I:`), handed out by a patched
+  card manager getter, inserted / ejected by the development keyboard's Delete key (the card
+  input; the profile puts it in on the first start, `WAL_RINGEDGE_SFC_CARD_AUTO`); a blank card of the game's format created when the drive holds none (key record
+  twice with a CRC-32 low half, body CRC). The game's `uncompress` call passes an
+  uninitialized length (redirected), its network check compares the address with
+  `192.168.68.0` (rewritten to the machine's network). Free play: the credit object's
+  `is_freeplay` answers yes (Elysion: its vtable slot 0x14; slot 0x10 is `jvs_is_error`,
+  error 6401 when it answers yes). Ticket / GP purchase then costs nothing.
 
 ### 6.3e Sega Amusements Shell (`crates/payload-segashell`)
 
@@ -8954,6 +9004,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `fantasy-soccer` | Fantasy Soccer | unis | user 100% (2026-11-05), 4 players | UE4 packed executable (§6.3j): `UsbPluginsDll_R.dll`'s exports patched (I/O: sticks, buttons, ball kicks; per-player coins; dongle), every player calibrated, no camera, one screen (`bEnableSplitscreen` off in the saved config), 1920x1080 desktop fitted (packed imports rescanned), arrows move |
 | `mighty-moto` | Mighty Moto | unis | user 100% (2026-11-05) | Unity 2.x 32-bit (§6.3j): wal-loader, the cabinet's keys posted to the game window from player 1's stick and pedals (real keyboard filtered), fake DirectInput |
 | `big-foot-crush` | Big Foot Crush | unis | user 100% (2026-11-06) | Unity 2022 32-bit (§6.3j): wal-loader, keys posted from player 1's stick, the settings the dump lacks in the profile, the operator menu's link answered, portrait fake desktop |
+| `veggie-blast` | Veggie Blast | unis | headless (2026-11-18) | Virtools (§6.3j) run by the dump's .NET 4 host `VeggieBlast.exe` (no cabinet player; the UART board unused): Microsoft .NET 4.8 prefix `wine-prefix/dotnet48` (wine-mono passes its ThisCall delegates as stdcall: CK2.dll crashes in `CKPluginManager::RegisterPlugin`), wal-loader queues the payload as an APC (an IL-only executable's entry point never runs under Wine), board `veggieblast`: the cursor (user32's `NtUserGetCursorPos`), left / right buttons (`GetAsyncKeyState`) and keys 1 / 5 from the gun, every message loop filtered (`input_filter::own_process_input`), `LocalControls.ini` free play / easy / absolute aim; the intro movie (`Intro.mp4`, 10-bit HEVC without audio, WPF `MediaElement` over Windows Media Player): Wine's EVR and dxva2 forced (GE patches 0126 winedmo DirectShow HEVC decoder, 0127 wmp pause / open and play states / rate / PositionChange / IWMPGraphCreation / no audio stream, 0128 evr presenter clock start / pause) |
 | `skylanders-cloud-patrol` | Skylanders Cloud Patrol | adrenaline | user 100% (2026-11-02), guns as touches | Adrenaline's touch screen game (Unity 4.2, 32-bit, §6.3k): the payload (`xinput1_3.dll`, loaded at the entry point) is its PQ Labs touch frame client (the guns touch where they point), its Kaboom I/O board and Matrix dongle, through Mono's `GetProcAddress`; crosshair |
 | `rabbids-hollywood` | Rabbids Hollywood | adrenaline | user 100% (2026-11-02), 4 guns (Sixense trackers emulated) | Adrenaline's gun game (Unity 2017.2, 64-bit, §6.3k): the payload (`xinput1_3.dll`) emulates its Sixense STEM trackers (each gun turned towards its aim), its Kaboom Adrio board and Matrix dongle, puts `NewInputManager` on the guns; Wine's `winhttp` (no BepInEx) |
 | `tomb-raider` | Tomb Raider | adrenaline | user 100% (2026-11-03), 4 guns (Sixense trackers emulated), operator settings saved | Adrenaline's gun game (Unity 2017.2, 64-bit, §6.3k): Rabbids Hollywood's Sixense trackers, Kaboom Adrio board and Matrix dongle; the trigger on the board's player button 2, the tracker's button reloads; Wine's `winhttp` |
@@ -9018,6 +9069,7 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `left-4-dead-survivors` | Left 4 Dead: Survivors | nesica | user 100% (2026-11-16), NESiCA card (new player, CPU play), mouse and pad | Type X3 Source engine (§6.2): `bin\inputsystem.dll` loads the payload; Type X3 reader security and commands, FastIO hub/universal board registers, HID mouse and winmm grip emulated, the gun's mouse from the sticks or the mouse (menus point and click), `+arcade_NESiCA_Accept 1`, getCardInfo record for a new card, lobby server answered with no rooms |
 | `groove-coaster-2` | Groove Coaster 2: Heavenly Festival | nesica | user 100% (2026-11-16), boosters, NESiCA card (registration, saves), free play | Type X3 portrait rhythm game (§6.2): windowed 9:16 with black bezel, GetAdaptersInfo MAC for the LAN link, update downloader answered (NESYS thread deadlock under Wine), Type X3 reader with C:\TypeXZEROTemp.dat, the boosters on FastIO, free play patch, Groove Coaster card server (registration, player, song records, settings) |
 | `gunslinger-stratos-2` | Gunslinger Stratos 2 | nesica | user 100% (2026-11-17), G devices, two lightguns, free play, intro and attract movies; NESiCA play unavailable (no game server) | Type X3 64-bit twin-gun game (§6.2): x86_64 iDmacDrv64.dll, the two 2D sensor boards on COM1/COM3 (aim, triggers), levers and buttons on FastIO, two lightguns, reader bus reset fix, time mode kept off for free play, movies through GE quartz/msrle32 fixes (0123-0125) |
+| `gunslinger-stratos-3` | Gunslinger Stratos 3 | nesica | works (headless tests: first boot G device setup, test menu, attract with its movies, free play, guest play into a mission); NESiCA play and voice chat unavailable (no game servers) | Gunslinger Stratos 2's cabinet (§6.2): the same G devices and FastIO, the headset amplifier on COM4 emulated, the sound engine's "スピーカー" device name match patched (sound device error 10000008), the voice chat HUD skipped (no server: red box), free play in its settings object (+0x100) |
 | `mario-and-sonic-at-tokyo-2020-olympic-games` | Mario & Sonic at the Tokyo 2020 Olympic Games | alls | user 100% (2026-11-08) | the first ALLS game with its own amdaemon (§6.3l): SystemProperty registry, keychip ioctls, IO4 board, LED board 15093 COM1, sysfile.dat DIP switches and free play, ALL.Net answers, Japan clock, amRtc sync patch, portrait 1080x1920 with the dump's bezel |
 | `house-of-the-dead-scarlet-dawn` | The House of the Dead: Scarlet Dawn | alls | user 100% (2026-11-08), 2 guns | UE 4.18 with its 2018 amdaemon (§6.3l, `WAL_ALLS_BOARD=hotd`): generated ICF (platform ACA1), gun sensor board COM1 (aim, triggers, reload off screen), graphics options in Engine.ini (render scale, FSR), gore restoration rebuilt as a patch pak (`WAL_HOTD_GORE`), 16:9 desktop stretched on 4:3 screens |
 | `sega-world-drivers-championship` | Sega World Drivers Championship | alls | user-tested (2026-11-08): power-on test all GOOD, card registration with name entry, a race, the save, the returning player's licence | ALLS with amdaemon (§6.3l, `WAL_ALLS_BOARD=swdc`): wheel I/O board, Aime reader (automatic card), FFB / LED / dashboard boards, main cabinet LAN, English translation, AimeDB and its game server (player saves) |
@@ -9031,6 +9083,8 @@ Games status, one row per game id (`<gameid>.windowsloader` in the dump; scripte
 | `radikal-bikers` | Radikal Bikers | arcadepc | user 100% (2026-11-14) | Gaelco 3D board emulator `radikalb.exe` (Direct3D 8, §6.3i, board `radikalbikers`): setup dialog answered, its input reader from the virtual stick, `radikalb.dat` saved on change, free play by a coin on start |
 | `project-diva-arcade` | Hatsune Miku Project DIVA Arcade | ringedge | user 100% (2026-11-15, desktop) | RingEdge 2 (§6.3d), SBTY 6.00.01, OpenGL: NVIDIA assembly translated for Mesa, touch panel and pointer, lamp control board (`WAL_RINGEDGE_DIVA_LAMP`), free play, open all day (closing time), automatic card after start or a touch; Y: a folder of its own (the game formats it) |
 | `border-break-scramble` | Border Break Scramble | ringedge2 | user (2026-11-15): "working 100% excluding online mode" | RingEdge 2 NRS engine (§6.3d), SBVA 4.5.0, OpenGL: its NV_gpu_program4 shaders translated, JVS left grip and move stick, raw input aim mouse listed, the mouse or stick as touch pointer (red dot), free play, the extended image's markers |
+| `shining-force-cross-raid` | Shining Force Cross Raid | ringedge | headless tests (2026-11-19): IC card in files, free play tickets, a scenario quest to its end (card saved), input test; user: works on the desktop (2026-11-19) | RingEdge (§6.3d), SBVB 1.05, Project DIVA Arcade's engine (OpenGL, NVIDIA programs translated): its title server (`sfcserver.rs`, binary structures zlib packed, the card's data handed back), the development IC card in files (card input = its Delete key, a blank card created), CTR-251500 touch panel and pointer, JVS stick and buttons, ALL.Net and billing, free play, open all day |
+| `shining-force-cross-elysion` | Shining Force Cross Elysion | ringedge | headless tests (2026-11-19): IC card in files, free play GP, a scenario quest to its end (card saved); user: works on the desktop (2026-11-19) | Raid's profile and title server (§6.3d), Ver.C 2.06: its own protocol (22 commands), card format and addresses |
 | `kancolle-arcade` | KanColle Arcade | seganu | user 100% (2026-11-15): guest and Aime card play | Sega Nu (§6.3m), SDBZ 7.40, 64-bit: NVIDIA-only OpenGL translated (`WAL_NVGL`: unified memory, command lists, bindless), WGL_NV_DX_interop for its movies, ALL.Net, billing, ICF, AimeDB, Aime COM10, 3M touch COM1, its title server (admirals, sorties, drops, progress per Aime card) |
 | `crossbeats-rev` | crossbeats REV. | alls | user 100% (2026-11-16, desktop): mouse with the red dot, touchpad multi-touch | SUNRiSE's predecessor (§6.3l, `WAL_ALLS_BOARD=cxb`), SDCA: options read up to the executable's last folder, the game server answering requests up to version 10102 (ARTEMiS' REV. tables, songs and events the options hold, REV.'s saves), touches in its 1920x1080 layout (`WAL_CXB_TOUCH`) |
 

@@ -25,7 +25,7 @@ emulating each cabinet's I/O, dongle and network services in the game process.
 * Documentation: [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) (implementation),
   [DESIGN.md](DESIGN.md) (research notes)
 
-## Games (404)
+## Games (406)
 
 Status: as verified by hand (docs/IMPLEMENTATION.md). Regression test: the game's latest
 automated run (started, still running, a window, a picture, sound; attract mode, coin and start
@@ -102,6 +102,7 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `gouketsuji-ichizoku` | Gouketsuji Ichizoku: Matsuri Senzo Kuyou | nesica | works (user) | not in the test |  |
 | `groove-coaster-2` | Groove Coaster 2: Heavenly Festival | nesica | user 100% (2026-11-16), boosters, NESiCA card (registration, saves), free play | not in the test |  |
 | `gunslinger-stratos-2` | Gunslinger Stratos 2 | nesica | user 100% (2026-11-17), G devices, two lightguns, free play, intro and attract movies; NESiCA play unavailable (no game server) | not in the test |  |
+| `gunslinger-stratos-3` | Gunslinger Stratos 3 | nesica | works (headless tests: first boot G device setup, test menu, attract with its movies, free play, guest play into a mission); NESiCA play and voice chat unavailable (no game servers) | not in the test |  |
 | `homura` | Homura | nesica | works (user), sound effects and music in game; attract demo silent, as under Windows (original or dump, not the loader) | not in the test |  |
 | `hyper-street-fighter-2` | Hyper Street Fighter II: The Anniversary Edition | nesica | works (user) | not in the test |  |
 | `ikaruga` | Ikaruga | nesica | in game (user) | not in the test |  |
@@ -362,6 +363,7 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `fantasy-soccer` | Fantasy Soccer | unis | user 100% (2026-11-05), 4 players | not in the test |  |
 | `mighty-moto` | Mighty Moto | unis | user 100% (2026-11-05) | not in the test |  |
 | `big-foot-crush` | Big Foot Crush | unis | user 100% (2026-11-06) | not in the test |  |
+| `veggie-blast` | Veggie Blast | unis | works (headless tests: boot, attract, coin / start, aim and shots, free play and easy options), 1 gun; the .NET host's intro movie (10-bit HEVC, WPF MediaElement) needs the GE-Proton runner's winedmo / wmp / evr fixes (GE patches 0126-0128) | not in the test |  |
 | `skylanders-cloud-patrol` | Skylanders Cloud Patrol | adrenaline | user 100% (2026-11-02), guns as touches | not in the test |  |
 | `rabbids-hollywood` | Rabbids Hollywood | adrenaline | user 100% (2026-11-02), 4 guns (Sixense trackers emulated) | not in the test |  |
 | `tomb-raider` | Tomb Raider | adrenaline | user 100% (2026-11-03), 4 guns (Sixense trackers emulated), operator settings saved | not in the test |  |
@@ -439,6 +441,8 @@ after 30 s). Picture and sound checks can miss a dark or silent moment of an att
 | `border-break-scramble` | Border Break Scramble | ringedge2 | user (2026-11-15): "working 100% excluding online mode" | not in the test |  |
 | `kancolle-arcade` | KanColle Arcade | seganu | user 100% (2026-11-15): guest and Aime card play | not in the test |  |
 | `crossbeats-rev` | crossbeats REV. | alls | user 100% (2026-11-16, desktop): mouse with the red dot, touchpad multi-touch | not in the test |  |
+| `shining-force-cross-raid` | Shining Force Cross Raid | ringedge | headless tests (2026-11-19): IC card in files, free play tickets, a scenario quest to its end (card saved), input test; user: works on the desktop (2026-11-19) | not in the test |  |
+| `shining-force-cross-elysion` | Shining Force Cross Elysion | ringedge | headless tests (2026-11-19): IC card in files, free play GP, a scenario quest to its end (card saved); user: works on the desktop (2026-11-19) | not in the test |  |
 <!-- GAMELIST END -->
 
 ## Thanks
